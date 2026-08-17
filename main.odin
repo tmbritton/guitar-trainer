@@ -60,7 +60,18 @@ main :: proc() {
 // screenshot renders the drill screen and the progress panel (with some seeded
 // trial data so they aren't empty) and writes PNGs, for visual inspection.
 screenshot :: proc() {
-	rl.InitWindow(WINDOW_W, WINDOW_H, "Guitar Trainer")
+	which := "drill"
+	for a in os.args {
+		if a == "progress" || a == "feedback" || a == "fullscreen" {
+			which = a
+		}
+	}
+	// A wider window for the fullscreen shot so the letterbox bars are visible.
+	win_w, win_h: i32 = WINDOW_W, WINDOW_H
+	if which == "fullscreen" {
+		win_w, win_h = 1280, 600
+	}
+	rl.InitWindow(win_w, win_h, "Guitar Trainer")
 	defer rl.CloseWindow()
 
 	audio_ok := audio_init()
@@ -102,13 +113,7 @@ screenshot :: proc() {
 
 	g_shot_drill = &d
 	// One capture per process (a second TakeScreenshot in the same process reads
-	// an undrawn buffer). Pick the screen via an extra arg.
-	which := "drill"
-	for a in os.args {
-		if a == "progress" || a == "feedback" {
-			which = a
-		}
-	}
+	// an undrawn buffer). Pick the screen via the arg parsed above.
 	switch which {
 	case "progress":
 		shot_frame(proc() {drill_draw_progress(g_shot_drill)}, "gt_progress.png")
@@ -118,6 +123,24 @@ screenshot :: proc() {
 		d.last_correct = true
 		shot_frame(proc() {drill_draw(g_shot_drill, true, true, "offset 4 samples (0.08 ms)")}, "gt_feedback.png")
 		fmt.println("wrote gt_feedback.png")
+	case "fullscreen":
+		// Render the 800x480 scene to a texture and blit it letterboxed into the
+		// wide window — the same path run_app uses at real fullscreen.
+		tgt := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
+		defer rl.UnloadRenderTexture(tgt)
+		rl.SetTextureFilter(tgt.texture, .POINT)
+		for _ in 0 ..< 2 {
+			rl.BeginTextureMode(tgt)
+			rl.ClearBackground(UI_BG)
+			drill_draw(g_shot_drill, true, true, "offset 4 samples (0.08 ms)")
+			rl.EndTextureMode()
+			rl.BeginDrawing()
+			rl.ClearBackground(rl.BLACK)
+			blit_fit(tgt, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight()))
+			rl.EndDrawing()
+		}
+		rl.TakeScreenshot("gt_fullscreen.png")
+		fmt.println("wrote gt_fullscreen.png")
 	case:
 		shot_frame(proc() {drill_draw(g_shot_drill, true, true, "offset 4 samples (0.08 ms)")}, "gt_drill.png")
 		fmt.println("wrote gt_drill.png")
@@ -557,7 +580,17 @@ run_app :: proc() {
 	// a single duplex ma_device (see audio.odin), per the architecture rules.
 	rl.InitWindow(WINDOW_W, WINDOW_H, "Guitar Trainer")
 	defer rl.CloseWindow()
+
+	// Launch fullscreen with nothing else on screen — a practice session should
+	// have no competing UI. The drill is drawn at a fixed 800x480 into an
+	// offscreen texture, then scaled and centred (black letterbox) to the display.
+	rl.ToggleBorderlessWindowed()
+	rl.HideCursor()
 	rl.SetTargetFPS(60)
+
+	target := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
+	defer rl.UnloadRenderTexture(target)
+	rl.SetTextureFilter(target.texture, .POINT) // crisp pixels when scaled up
 
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
@@ -594,15 +627,32 @@ run_app :: proc() {
 			show_progress = !show_progress
 		}
 
-		rl.BeginDrawing()
-		rl.ClearBackground({18, 18, 22, 255})
+		// draw the 800x480 scene into the offscreen texture
+		rl.BeginTextureMode(target)
+		rl.ClearBackground(UI_BG)
 		if show_progress && store_ok {
 			drill_draw_progress(&d)
 		} else {
 			drill_draw(&d, audio_ok, store_ok, calib_status)
 		}
+		rl.EndTextureMode()
+
+		rl.BeginDrawing()
+		rl.ClearBackground(rl.BLACK)
+		blit_fit(target, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight()))
 		rl.EndDrawing()
 	}
+}
+
+// blit_fit draws the 800x480 scene texture scaled to fit (sw, sh), centred, with
+// black letterbox bars — so the fixed-layout drill fills any display cleanly.
+blit_fit :: proc(target: rl.RenderTexture2D, sw, sh: f32) {
+	scale := min(sw / WINDOW_W, sh / WINDOW_H)
+	dw := WINDOW_W * scale
+	dh := WINDOW_H * scale
+	src := rl.Rectangle{0, 0, WINDOW_W, -WINDOW_H} // negative height flips the render texture
+	dst := rl.Rectangle{(sw - dw) / 2, (sh - dh) / 2, dw, dh}
+	rl.DrawTexturePro(target.texture, src, dst, {0, 0}, 0, rl.WHITE)
 }
 
 // drill_draw_progress renders the progress view (toggle with P), derived entirely
