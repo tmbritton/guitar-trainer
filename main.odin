@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:time"
 import rl "vendor:raylib"
@@ -48,8 +49,94 @@ main :: proc() {
 			progresscheck()
 			return
 		}
+		if arg == "--screenshot" {
+			screenshot()
+			return
+		}
 	}
 	run_app()
+}
+
+// screenshot renders the drill screen and the progress panel (with some seeded
+// trial data so they aren't empty) and writes PNGs, for visual inspection.
+screenshot :: proc() {
+	rl.InitWindow(WINDOW_W, WINDOW_H, "Guitar Trainer")
+	defer rl.CloseWindow()
+
+	audio_ok := audio_init()
+	defer if audio_ok do audio_shutdown()
+
+	path :: "/tmp/gt_shot.db"
+	os.remove(path)
+	db, _ := store.open(path)
+	defer store.close(&db)
+	defer os.remove(path)
+
+	// Seed a realistic-looking history: several degrees, mixed accuracy.
+	seed :: proc(s: ^store.Store, deg, midi: i64, correct: bool) {
+		store.insert_trial(s, store.Trial_Row{ts = 1000, session_id = 1000, key = 60, target_degree = deg, target_midi = midi, detected_midi = midi, correct = correct, response_ms = 700})
+	}
+	mix := []struct {
+		deg:     i64,
+		correct: bool,
+	}{{1, true}, {1, true}, {1, true}, {2, true}, {2, false}, {3, true}, {3, false}, {3, false}, {5, true}, {5, true}, {6, false}, {4, true}}
+	for m in mix {
+		seed(&db, m.deg, 60 + m.deg, m.correct)
+	}
+
+	d := drill_init(&db, 1000)
+	defer drill_destroy(&d)
+	// advance into a trial so the drill screen shows a key + "listen" state
+	if audio_ok {
+		for _ in 0 ..< 3 {
+			drill_update(&d)
+		}
+	}
+	// give it a last-result so the reveal line shows
+	d.last_had_result = true
+	d.last_correct = true
+	d.last_target = 64
+	d.last_detected = 64
+	d.total = len(mix)
+	d.correct_count = 7
+
+	g_shot_drill = &d
+	// One capture per process (a second TakeScreenshot in the same process reads
+	// an undrawn buffer). Pick the screen via an extra arg.
+	which := "drill"
+	for a in os.args {
+		if a == "progress" || a == "feedback" {
+			which = a
+		}
+	}
+	switch which {
+	case "progress":
+		shot_frame(proc() {drill_draw_progress(g_shot_drill)}, "gt_progress.png")
+		fmt.println("wrote gt_progress.png")
+	case "feedback":
+		d.phase = .Feedback // force the revealed-note state for the shot
+		d.last_correct = true
+		shot_frame(proc() {drill_draw(g_shot_drill, true, true, "offset 4 samples (0.08 ms)")}, "gt_feedback.png")
+		fmt.println("wrote gt_feedback.png")
+	case:
+		shot_frame(proc() {drill_draw(g_shot_drill, true, true, "offset 4 samples (0.08 ms)")}, "gt_drill.png")
+		fmt.println("wrote gt_drill.png")
+	}
+}
+
+@(private = "file")
+g_shot_drill: ^Drill
+
+@(private = "file")
+shot_frame :: proc(draw: proc(), file: cstring) {
+	// render a couple of frames so the framebuffer is valid, then capture
+	for _ in 0 ..< 2 {
+		rl.BeginDrawing()
+		rl.ClearBackground({18, 18, 22, 255})
+		draw()
+		rl.EndDrawing()
+	}
+	rl.TakeScreenshot(file)
 }
 
 // progresscheck seeds a temp trial log across two day-buckets and verifies the
@@ -521,8 +608,22 @@ run_app :: proc() {
 // drill_draw_progress renders the progress view (toggle with P), derived entirely
 // from the trial log: practice days, totals, a naive recent-vs-overall trend, and
 // per-degree accuracy bars.
+// deg_color grades a per-degree accuracy: green mastered, gold learning, red weak.
+deg_color :: proc(pct: int, seen: bool) -> rl.Color {
+	if !seen {
+		return {50, 50, 74, 255}
+	}
+	if pct >= 70 {
+		return UI_GOOD
+	}
+	if pct >= 40 {
+		return UI_GOLD
+	}
+	return UI_BAD
+}
+
 drill_draw_progress :: proc(d: ^Drill) {
-	rl.DrawText("Progress", 24, 24, 22, {230, 230, 235, 255})
+	ui_text("PROGRESS", 22, 16, 28, UI_FRAME)
 
 	days := store.practice_days(d.db)
 	att, cor := store.overall(d.db)
@@ -530,93 +631,132 @@ drill_draw_progress :: proc(d: ^Drill) {
 	overall_pct := att > 0 ? int(100 * cor / att) : 0
 	recent_pct := racc_a > 0 ? int(100 * racc_c / racc_a) : 0
 
-	rl.DrawText(fmt.ctprintf("practice days: %d", days), 24, 66, 18, {200, 210, 230, 255})
-	rl.DrawText(fmt.ctprintf("trials: %d      accuracy: %d%%", att, overall_pct), 24, 92, 18, {200, 210, 230, 255})
+	// top row of arcade stat boxes
+	ui_stat(22, 60, 240, 62, "PRACTICE DAYS", fmt.ctprintf("%d", days))
+	ui_stat(280, 60, 240, 62, "TRIALS", fmt.ctprintf("%d", att))
+	ui_stat(538, 60, 240, 62, "ACCURACY", fmt.ctprintf("%d%%", overall_pct), UI_GOLD)
 
 	trend: cstring = "warming up"
+	tcol := UI_DIM
 	if racc_a >= 5 {
 		if recent_pct > overall_pct + 5 {
-			trend = "improving"
+			trend = "improving";tcol = UI_GOOD
 		} else if recent_pct < overall_pct - 5 {
-			trend = "dipping"
+			trend = "dipping";tcol = UI_BAD
 		} else {
-			trend = "steady"
+			trend = "steady";tcol = UI_FRAME
 		}
 	}
-	rl.DrawText(fmt.ctprintf("recent %d: %d%%  (%s)", racc_a, recent_pct, trend), 24, 118, 18, {180, 200, 180, 255})
+	rl.DrawText(fmt.ctprintf("recent %d trials: %d%%", racc_a, recent_pct), 22, 138, 18, UI_INK)
+	ui_text(trend, 300, 138, 18, tcol, false)
 
-	// per-degree accuracy bars
+	// per-degree accuracy as coloured pill-meters
 	att_d, cor_d := store.degree_stats(d.db)
-	rl.DrawText("by scale degree:", 24, 156, 16, {150, 150, 160, 255})
+	rl.DrawText("BY SCALE DEGREE", 22, 176, 16, UI_DIM)
+	track_x, track_w: i32 = 70, 480
 	for deg in 1 ..= 7 {
-		a := att_d[deg]
-		c := cor_d[deg]
-		pct := a > 0 ? int(100 * c / a) : 0
-		y := i32(180 + (deg - 1) * 26)
-		rl.DrawText(fmt.ctprintf("%d", deg), 24, y, 16, {180, 180, 190, 255})
-		rl.DrawRectangleLines(48, y, 300, 16, {80, 80, 90, 255})
+		a := int(att_d[deg])
+		c := int(cor_d[deg])
+		pct := a > 0 ? 100 * c / a : 0
+		y := i32(202 + (deg - 1) * 34)
+		// degree token
+		ui_capsule(40, y + 12, 40, 26, UI_BLUE, fmt.ctprintf("%d", deg), 22)
+		// track + fill
+		rl.DrawRectangleRoundedLinesEx({f32(track_x), f32(y), f32(track_w), 24}, 0.5, 8, 2, {60, 60, 84, 255})
 		if a > 0 {
-			rl.DrawRectangle(48, y, i32(pct * 3), 16, {120, 200, 120, 255})
+			fill := i32(pct) * track_w / 100
+			if fill < 12 {
+				fill = 12
+			}
+			rl.DrawRectangleRounded({f32(track_x), f32(y), f32(fill), 24}, 0.5, 8, deg_color(pct, true))
 		}
-		rl.DrawText(fmt.ctprintf("%3d%%  (n=%d)", pct, a), 360, y, 16, {150, 150, 160, 255})
+		rl.DrawText(fmt.ctprintf("%3d%%  n=%d", pct, a), track_x + track_w + 12, y + 4, 16, UI_DIM)
 	}
 
-	rl.DrawText("P back to drill  ·  ESC quit", 24, 440, 16, {110, 110, 120, 255})
+	rl.DrawText("P back to drill  ·  ESC quit", 22, 452, 16, {90, 90, 120, 255})
 }
 
 // drill_draw renders the minimal training HUD. Deliberately spare: no per-note
 // green/red, the target degree stays hidden until the answer is revealed.
 drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
-	rl.DrawText("Guitar Trainer", 24, 24, 22, {230, 230, 235, 255})
+	ui_text("GUITAR TRAINER", 22, 16, 28, UI_FRAME)
 
 	if !audio_ok {
-		rl.DrawText("audio device failed to initialize", 24, 70, 18, {220, 120, 120, 255})
+		ui_text("audio device failed to start", 22, 90, 20, UI_BAD)
 		return
 	}
 	if !store_ok {
-		rl.DrawText("trial log (trials.db) failed to open", 24, 70, 18, {220, 120, 120, 255})
+		ui_text("trial log failed to open", 22, 90, 20, UI_BAD)
 		return
 	}
 
-	rl.DrawText(fmt.ctprintf("Key:  %s major", music.note_name(d.trial.key.tonic_midi)), 24, 74, 20, {200, 210, 230, 255})
-
-	// phase line
-	phase_msg: cstring
-	switch d.phase {
-	case .Idle:
-		phase_msg = "…"
-	case .Listen:
-		phase_msg = "listen — then play the note you heard"
-	case .Confirm:
-		phase_msg = "…"
-	case .Feedback:
-		phase_msg = d.last_correct ? "yes — that's it" : "not quite"
-	}
-	col: rl.Color = {180, 180, 190, 255}
-	if d.phase == .Feedback {
-		col = d.last_correct ? {150, 210, 150, 255} : {210, 180, 140, 255}
-	}
-	rl.DrawText(phase_msg, 24, 120, 22, col)
-
-	// reveal target + what was played, only after an answer
-	if d.last_had_result {
-		played := d.last_detected >= 0 ? music.note_name(d.last_detected) : "—"
-		rl.DrawText(
-			fmt.ctprintf("last: target %s   ·   you played %s", music.note_name(d.last_target), played),
-			24, 160, 18, {150, 150, 160, 255},
-		)
-	}
-
-	// session stats
+	// --- left HUD: KEY / TRIAL / ACC arcade boxes ---
 	acc := d.total > 0 ? 100 * d.correct_count / d.total : 0
-	rl.DrawText(fmt.ctprintf("trials: %d    accuracy: %d%%", d.total, acc), 24, 210, 18, {170, 190, 170, 255})
+	ui_stat(22, 60, 158, 62, "KEY", fmt.ctprintf("%s", music.note_name(d.trial.key.tonic_midi)))
+	ui_stat(22, 138, 158, 62, "TRIAL", fmt.ctprintf("%d", d.total))
+	ui_stat(22, 216, 158, 62, "ACCURACY", fmt.ctprintf("%d%%", acc), UI_GOLD)
 
-	// input meter
-	lvl := audio_input_level()
-	bar_w := i32(clamp(lvl * 4, 0, 1) * 400)
-	rl.DrawRectangleLines(24, 250, 400, 16, {80, 80, 90, 255})
-	rl.DrawRectangle(24, 250, bar_w, 16, {120, 200, 120, 255})
+	// --- center playfield ---
+	px, py, pw, ph: i32 = 200, 60, 372, 300
+	ui_panel(px, py, pw, ph)
+	cx := px + pw / 2
 
-	rl.DrawText(fmt.ctprintf("calibration: %s", calib_status), 24, 400, 16, {150, 150, 180, 255})
-	rl.DrawText("C calibrate (when idle)  ·  ESC quit", 24, 440, 16, {110, 110, 120, 255})
+	phase_label: cstring = ""
+	switch d.phase {
+	case .Idle, .Confirm:
+		phase_label = "READY"
+	case .Listen:
+		phase_label = "LISTEN"
+	case .Feedback:
+		phase_label = d.last_correct ? "NAILED IT" : "NOT QUITE"
+	}
+	lc := d.phase == .Feedback ? (d.last_correct ? UI_GOOD : UI_BAD) : UI_FRAME
+	ui_text_center(phase_label, cx, py + 26, 28, lc)
+
+	// the note capsule: hidden while listening, revealed (coloured) on feedback.
+	// A gentle breathing pulse while listening signals "your turn" without being
+	// a per-note correctness cue.
+	cap_col := UI_BLUE
+	cap_label: cstring = "?"
+	if d.phase == .Feedback {
+		cap_col = d.last_correct ? UI_GOOD : UI_BAD
+		cap_label = fmt.ctprintf("%s", music.note_name(d.last_target))
+	}
+	pulse: f32 = 1
+	if d.phase == .Listen {
+		pulse = 1 + 0.03 * f32(math.sin(rl.GetTime() * 4))
+	}
+	ui_capsule(cx, py + 150, i32(220 * pulse), i32(96 * pulse), cap_col, cap_label, 56)
+
+	sub: cstring = "play the note you heard"
+	if d.phase == .Feedback && d.last_had_result {
+		played := d.last_detected >= 0 ? music.note_name(d.last_detected) : "no note"
+		sub = fmt.ctprintf("you played %s", played)
+	} else if d.phase != .Listen {
+		sub = ""
+	}
+	ui_text_center(sub, cx, py + 226, 18, UI_DIM)
+
+	// --- right: the session bottle, fills with capsules per answered trial ---
+	bx, by, bw, bh: i32 = 596, 60, 178, 300
+	rl.DrawText("SESSION", bx + 4, by - 22, 16, UI_DIM)
+	ix, iy, iw, ih := ui_bottle(bx, by, bw, bh)
+	pill_h: i32 = 20
+	gap: i32 = 6
+	capacity := ih / (pill_h + gap)
+	shown := min(i32(d.total), capacity)
+	for i in 0 ..< shown {
+		// stack from the bottom; greens (nailed) first, then misses
+		yy := iy + ih - (i + 1) * (pill_h + gap) + gap
+		col := i < i32(d.correct_count) ? UI_GOOD : UI_BAD
+		ui_capsule(ix + iw / 2, yy + pill_h / 2, iw - 8, pill_h, col, "", 0)
+	}
+
+	// --- input meter ---
+	rl.DrawText("INPUT", 22, 384, 16, UI_DIM)
+	ui_meter(90, 384, 482, 16, clamp(audio_input_level() * 4, 0, 1))
+
+	// --- footer ---
+	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 424, 16, UI_DIM)
+	rl.DrawText("C calibrate  ·  P progress  ·  ESC quit", 22, 452, 16, {90, 90, 120, 255})
 }
