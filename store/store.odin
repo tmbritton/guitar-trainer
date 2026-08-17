@@ -5,6 +5,8 @@ package store
 // derivable from this log, so resist adding tables. Main-thread only; never
 // touched from the audio callback.
 
+import "core:fmt"
+
 Store :: struct {
 	db:          ^sqlite3,
 	insert_stmt: ^sqlite3_stmt,
@@ -39,15 +41,20 @@ open :: proc(path: cstring) -> (Store, bool) {
 	s: Store
 	if sqlite3_open(path, &s.db) != SQLITE_OK {
 		if s.db != nil {
+			fmt.eprintfln("store: open %s failed: %s", path, sqlite3_errmsg(s.db))
 			sqlite3_close(s.db)
+		} else {
+			fmt.eprintfln("store: open %s failed (out of memory)", path)
 		}
 		return {}, false
 	}
 	if sqlite3_exec(s.db, DDL, nil, nil, nil) != SQLITE_OK {
+		fmt.eprintfln("store: create table failed: %s", sqlite3_errmsg(s.db))
 		sqlite3_close(s.db)
 		return {}, false
 	}
 	if sqlite3_prepare_v2(s.db, INSERT_SQL, -1, &s.insert_stmt, nil) != SQLITE_OK {
+		fmt.eprintfln("store: prepare insert failed: %s", sqlite3_errmsg(s.db))
 		sqlite3_close(s.db)
 		return {}, false
 	}
