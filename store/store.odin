@@ -125,6 +125,47 @@ response_ms_bounds :: proc(s: ^Store) -> (lo: i64, hi: i64) {
 	return sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1)
 }
 
+// query_two_i64 runs a single-row query returning two int64 columns.
+@(private)
+query_two_i64 :: proc(s: ^Store, sql: cstring) -> (a: i64, b: i64) {
+	stmt: ^sqlite3_stmt
+	if sqlite3_prepare_v2(s.db, sql, -1, &stmt, nil) != SQLITE_OK {
+		return
+	}
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_ROW {
+		return
+	}
+	return sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1)
+}
+
+// overall returns total (attempts, correct) across the whole log.
+overall :: proc(s: ^Store) -> (attempts: i64, correct: i64) {
+	return query_two_i64(s, "SELECT COUNT(*), COALESCE(SUM(correct),0) FROM trials;")
+}
+
+// recent_accuracy returns (attempts, correct) over the most recent n trials by id.
+recent_accuracy :: proc(s: ^Store, n: int) -> (attempts: i64, correct: i64) {
+	stmt: ^sqlite3_stmt
+	sql: cstring : "SELECT COUNT(*), COALESCE(SUM(correct),0) FROM (SELECT correct FROM trials ORDER BY id DESC LIMIT ?);"
+	if sqlite3_prepare_v2(s.db, sql, -1, &stmt, nil) != SQLITE_OK {
+		return
+	}
+	defer sqlite3_finalize(stmt)
+	sqlite3_bind_int64(stmt, 1, i64(n))
+	if sqlite3_step(stmt) != SQLITE_ROW {
+		return
+	}
+	return sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1)
+}
+
+// practice_days returns the number of distinct calendar-day buckets practiced,
+// bucketing by session_id (a per-launch unix timestamp) / seconds-per-day.
+practice_days :: proc(s: ^Store) -> i64 {
+	a, _ := query_two_i64(s, "SELECT COUNT(DISTINCT session_id / 86400), 0 FROM trials;")
+	return a
+}
+
 // count_trials returns the number of rows (diagnostic / progress helper).
 count_trials :: proc(s: ^Store) -> i64 {
 	stmt: ^sqlite3_stmt

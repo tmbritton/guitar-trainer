@@ -70,6 +70,62 @@ degree_row :: proc(degree, midi: i64, correct: bool) -> Trial_Row {
 	return r
 }
 
+session_row :: proc(session, midi: i64, correct: bool) -> Trial_Row {
+	r := sample_row(midi, correct)
+	r.session_id = session
+	r.ts = session
+	return r
+}
+
+@(test)
+overall_counts_attempts_and_correct :: proc(t: ^testing.T) {
+	path, cpath := temp_db()
+	defer cleanup_db(path, cpath)
+	s, ok := open(cpath)
+	testing.expect(t, ok, "open")
+	defer close(&s)
+
+	correctness := []bool{true, false, true, true, false}
+	for c in correctness {
+		insert_trial(&s, sample_row(60, c))
+	}
+	attempts, correct := overall(&s)
+	testing.expect_value(t, attempts, i64(5))
+	testing.expect_value(t, correct, i64(3))
+}
+
+@(test)
+recent_accuracy_uses_last_n_by_id :: proc(t: ^testing.T) {
+	path, cpath := temp_db()
+	defer cleanup_db(path, cpath)
+	s, ok := open(cpath)
+	testing.expect(t, ok, "open")
+	defer close(&s)
+
+	// insert order: T,T,T,F,F  -> the last 2 are both wrong
+	for c in ([]bool{true, true, true, false, false}) {
+		insert_trial(&s, sample_row(60, c))
+	}
+	attempts, correct := recent_accuracy(&s, 2)
+	testing.expect_value(t, attempts, i64(2))
+	testing.expect_value(t, correct, i64(0))
+}
+
+@(test)
+practice_days_counts_distinct_day_buckets :: proc(t: ^testing.T) {
+	path, cpath := temp_db()
+	defer cleanup_db(path, cpath)
+	s, ok := open(cpath)
+	testing.expect(t, ok, "open")
+	defer close(&s)
+
+	// two sessions same day (100 and 200 are both in day bucket 0), one next day
+	insert_trial(&s, session_row(100, 60, true))
+	insert_trial(&s, session_row(200, 60, true))
+	insert_trial(&s, session_row(100 + 86400, 60, false)) // day bucket 1
+	testing.expect_value(t, practice_days(&s), i64(2))
+}
+
 @(test)
 degree_stats_aggregates_per_degree :: proc(t: ^testing.T) {
 	path, cpath := temp_db()

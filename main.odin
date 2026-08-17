@@ -44,8 +44,48 @@ main :: proc() {
 			drillsim()
 			return
 		}
+		if arg == "--progresscheck" {
+			progresscheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// progresscheck seeds a temp trial log across two day-buckets and verifies the
+// progress aggregates (overall / practice_days / recent_accuracy). No audio.
+progresscheck :: proc() {
+	path :: "/tmp/gt_progress.db"
+	os.remove(path)
+	s, ok := store.open(path)
+	if !ok {
+		fmt.eprintln("FAIL: store.open")
+		os.exit(1)
+	}
+	defer os.remove(path)
+	defer store.close(&s)
+
+	seed :: proc(s: ^store.Store, session, midi: i64, correct: bool) {
+		store.insert_trial(s, store.Trial_Row{ts = session, session_id = session, target_midi = midi, detected_midi = midi, correct = correct})
+	}
+	// day 0 (session 100): 3 trials, 2 correct; day 1 (session 100+86400): 2 wrong.
+	seed(&s, 100, 60, true)
+	seed(&s, 100, 60, true)
+	seed(&s, 100, 60, false)
+	seed(&s, 100 + 86400, 62, false)
+	seed(&s, 100 + 86400, 62, false)
+
+	att, cor := store.overall(&s)
+	days := store.practice_days(&s)
+	ra, rc := store.recent_accuracy(&s, 2)
+	fmt.printfln("overall=%d/%d  practice_days=%d  recent2=%d/%d", cor, att, days, rc, ra)
+
+	ok_all := att == 5 && cor == 2 && days == 2 && ra == 2 && rc == 0
+	if !ok_all {
+		fmt.eprintln("FAIL: progress aggregates wrong")
+		os.exit(1)
+	}
+	fmt.println("PASS: progress aggregates derived from the trial log")
 }
 
 // drillsim drives the frame-stepped drill over loopback, injecting a scripted
@@ -448,6 +488,7 @@ run_app :: proc() {
 
 	calib_buf: [96]u8
 	calib_status := "not calibrated — press C (when idle)"
+	show_progress := false
 
 	for !rl.WindowShouldClose() {
 		// Calibrate only between trials so it doesn't fight the drill's audio.
@@ -462,12 +503,65 @@ run_app :: proc() {
 		if audio_ok && store_ok {
 			drill_update(&d)
 		}
+		if store_ok && rl.IsKeyPressed(.P) {
+			show_progress = !show_progress
+		}
 
 		rl.BeginDrawing()
 		rl.ClearBackground({18, 18, 22, 255})
-		drill_draw(&d, audio_ok, store_ok, calib_status)
+		if show_progress && store_ok {
+			drill_draw_progress(&d)
+		} else {
+			drill_draw(&d, audio_ok, store_ok, calib_status)
+		}
 		rl.EndDrawing()
 	}
+}
+
+// drill_draw_progress renders the progress view (toggle with P), derived entirely
+// from the trial log: practice days, totals, a naive recent-vs-overall trend, and
+// per-degree accuracy bars.
+drill_draw_progress :: proc(d: ^Drill) {
+	rl.DrawText("Progress", 24, 24, 22, {230, 230, 235, 255})
+
+	days := store.practice_days(d.db)
+	att, cor := store.overall(d.db)
+	racc_a, racc_c := store.recent_accuracy(d.db, 20)
+	overall_pct := att > 0 ? int(100 * cor / att) : 0
+	recent_pct := racc_a > 0 ? int(100 * racc_c / racc_a) : 0
+
+	rl.DrawText(fmt.ctprintf("practice days: %d", days), 24, 66, 18, {200, 210, 230, 255})
+	rl.DrawText(fmt.ctprintf("trials: %d      accuracy: %d%%", att, overall_pct), 24, 92, 18, {200, 210, 230, 255})
+
+	trend: cstring = "warming up"
+	if racc_a >= 5 {
+		if recent_pct > overall_pct + 5 {
+			trend = "improving"
+		} else if recent_pct < overall_pct - 5 {
+			trend = "dipping"
+		} else {
+			trend = "steady"
+		}
+	}
+	rl.DrawText(fmt.ctprintf("recent 20: %d%%  (%s)", recent_pct, trend), 24, 118, 18, {180, 200, 180, 255})
+
+	// per-degree accuracy bars
+	att_d, cor_d := store.degree_stats(d.db)
+	rl.DrawText("by scale degree:", 24, 156, 16, {150, 150, 160, 255})
+	for deg in 1 ..= 7 {
+		a := att_d[deg]
+		c := cor_d[deg]
+		pct := a > 0 ? int(100 * c / a) : 0
+		y := i32(180 + (deg - 1) * 26)
+		rl.DrawText(fmt.ctprintf("%d", deg), 24, y, 16, {180, 180, 190, 255})
+		rl.DrawRectangleLines(48, y, 300, 16, {80, 80, 90, 255})
+		if a > 0 {
+			rl.DrawRectangle(48, y, i32(pct * 3), 16, {120, 200, 120, 255})
+		}
+		rl.DrawText(fmt.ctprintf("%3d%%  (n=%d)", pct, a), 360, y, 16, {150, 150, 160, 255})
+	}
+
+	rl.DrawText("P back to drill  ·  ESC quit", 24, 440, 16, {110, 110, 120, 255})
 }
 
 // drill_draw renders the minimal training HUD. Deliberately spare: no per-note

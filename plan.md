@@ -67,7 +67,7 @@ Install prerequisites and stand up a buildable skeleton. Prefer mise for Odin.
 
 **The real milestone.** A hard gate: no v1+ work until three weeks of daily use.
 
-- [ ] **Story 4.1 — Session & progress instrumentation.** Session IDs on trials; a minimal progress view derived entirely from the trial log (no new tables). Enough to answer "did I practice today" and "am I improving."
+- [x] **Story 4.1 — Session & progress instrumentation.** *(store aggregates tested; progress panel toggled with P; `--progresscheck` PASS)* Session IDs on trials; a minimal progress view derived entirely from the trial log (no new tables). Enough to answer "did I practice today" and "am I improving."
 - [ ] **Story 4.2 — Three weeks of daily use.** Not a coding task. Use the drill daily; capture friction notes against open questions (§12): engagement past day 10, octave-agnostic slop, scheduling behavior. **Gate — do not proceed to Epic 5 until met.**
 
 ## Epic 5 — v1 Call and Response (Milestone M4) — GATED, plan later
