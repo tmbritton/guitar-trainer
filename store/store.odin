@@ -110,6 +110,21 @@ degree_stats :: proc(s: ^Store) -> (attempts: [8]i64, correct: [8]i64) {
 	return
 }
 
+// response_ms_bounds returns (min, max) response_ms across all trials, or
+// (0, 0) if empty. Diagnostic — used to catch nonsensical logged values.
+response_ms_bounds :: proc(s: ^Store) -> (lo: i64, hi: i64) {
+	stmt: ^sqlite3_stmt
+	sql: cstring : "SELECT COALESCE(MIN(response_ms),0), COALESCE(MAX(response_ms),0) FROM trials;"
+	if sqlite3_prepare_v2(s.db, sql, -1, &stmt, nil) != SQLITE_OK {
+		return
+	}
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_ROW {
+		return
+	}
+	return sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1)
+}
+
 // count_trials returns the number of rows (diagnostic / progress helper).
 count_trials :: proc(s: ^Store) -> i64 {
 	stmt: ^sqlite3_stmt

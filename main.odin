@@ -99,7 +99,14 @@ drillsim :: proc() {
 		fmt.eprintfln("FAIL: expected %d trials logged, got %d", len(want), n)
 		os.exit(1)
 	}
-	fmt.printfln("logged %d trials; session correct=%d/%d", n, d.correct_count, d.total)
+	// Guard against the response_ms unsigned-underflow regression: values must be
+	// non-negative and within a sane bound (well under the ~6 s listen timeout).
+	lo, hi := store.response_ms_bounds(&db2)
+	if lo < 0 || hi > 60_000 {
+		fmt.eprintfln("FAIL: response_ms out of range [%d, %d]", lo, hi)
+		os.exit(1)
+	}
+	fmt.printfln("logged %d trials; session correct=%d/%d; response_ms in [%d, %d]", n, d.correct_count, d.total, lo, hi)
 	// Two of the three scripted responses were correct.
 	if d.correct_count != 2 {
 		fmt.eprintfln("FAIL: expected 2 correct, got %d", d.correct_count)

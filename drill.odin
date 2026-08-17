@@ -145,7 +145,14 @@ drill_record :: proc(d: ^Drill, detected_midi: int) {
 	response_ms: i64 = 0
 	onset_offset: i64 = 0
 	if detected_midi >= 0 {
-		response_ms = i64(clock.samples_to_ms(d.onset_pos - d.listen_start))
+		// onset_pos can be up to one period BEFORE listen_start (the onset filter
+		// accepts hop-quantized attacks), so compute the delta signed and clamp:
+		// an unsigned subtraction here would underflow to a garbage response time.
+		delta := i64(d.onset_pos) - i64(d.listen_start)
+		if delta < 0 {
+			delta = 0
+		}
+		response_ms = i64(clock.samples_to_ms(u64(delta)))
 		onset_offset = i64(d.onset_pos) - i64(d.listen_start) - audio_get_offset()
 	}
 	store.insert_trial(
