@@ -8,6 +8,7 @@ import rl "vendor:raylib"
 import "clock"
 import "detect"
 import "game"
+import "music"
 import "store"
 
 WINDOW_W :: 800
@@ -39,8 +40,73 @@ main :: proc() {
 			storecheck()
 			return
 		}
+		if arg == "--drillsim" {
+			drillsim()
+			return
+		}
 	}
 	run_app()
+}
+
+// drillsim drives the frame-stepped drill over loopback, injecting a scripted
+// correct/wrong response per trial, and verifies the trials land in SQLite with
+// the right `correct` values — proving the live drill loop end to end.
+drillsim :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init returned false")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	audio_set_loopback(true)
+
+	path :: "/tmp/gt_drillsim.db"
+	os.remove(path)
+	db, ok := store.open(path)
+	if !ok {
+		fmt.eprintln("FAIL: store.open")
+		os.exit(1)
+	}
+
+	d := drill_init(&db, 123)
+	defer drill_destroy(&d)
+
+	want := []bool{true, false, true} // per-trial: inject a correct / wrong note
+	last_injected := max(u64)
+
+	for d.total < len(want) {
+		drill_update(&d)
+		// When a fresh trial reaches Listen, inject the scripted response tone.
+		if d.phase == .Listen && d.listen_start != last_injected {
+			shift := want[d.total] ? 0 : 1
+			resp := d.trial.target_midi + shift
+			audio_play_tone(detect.midi_to_freq(resp), d.listen_start, u64(clock.SAMPLE_RATE / 2), 0.6)
+			last_injected = d.listen_start
+		}
+		time.sleep(2 * time.Millisecond)
+	}
+
+	store.close(&db)
+
+	// Re-open and verify what was logged.
+	db2, ok2 := store.open(path)
+	if !ok2 {
+		fmt.eprintln("FAIL: reopen")
+		os.exit(1)
+	}
+	defer store.close(&db2)
+	n := store.count_trials(&db2)
+	if n != i64(len(want)) {
+		fmt.eprintfln("FAIL: expected %d trials logged, got %d", len(want), n)
+		os.exit(1)
+	}
+	fmt.printfln("logged %d trials; session correct=%d/%d", n, d.correct_count, d.total)
+	// Two of the three scripted responses were correct.
+	if d.correct_count != 2 {
+		fmt.eprintfln("FAIL: expected 2 correct, got %d", d.correct_count)
+		os.exit(1)
+	}
+	fmt.println("PASS: live drill loop judges and logs trials over loopback")
+	os.remove(path)
 }
 
 // storecheck writes a couple of trials to a DB so the result can be
@@ -360,60 +426,94 @@ run_app :: proc() {
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
 
-	onset_count := 0
-	last_onset_ms := 0.0
+	db: store.Store
+	store_ok := false
+	if audio_ok {
+		db, store_ok = store.open("trials.db")
+	}
+	defer if store_ok do store.close(&db)
+
+	session := i64(time.time_to_unix(time.now()))
+	d := drill_init(&db, session)
+	defer drill_destroy(&d)
+
 	calib_buf: [96]u8
-	calib_status := "not calibrated — press C"
+	calib_status := "not calibrated — press C (when idle)"
 
 	for !rl.WindowShouldClose() {
-		// Press C to calibrate the round-trip offset from real input (emit
-		// clicks, hear them back through the pickup/mic). Blocks ~1s.
-		if audio_ok && rl.IsKeyPressed(.C) {
+		// Calibrate only between trials so it doesn't fight the drill's audio.
+		if audio_ok && d.phase == .Idle && rl.IsKeyPressed(.C) {
 			if offset, ok := run_calibration(5); ok {
-				calib_status = fmt.bprintf(
-					calib_buf[:],
-					"offset %d samples (%.2f ms)",
-					offset,
-					clock.samples_to_ms(u64(abs(offset))),
-				)
+				calib_status = fmt.bprintf(calib_buf[:], "offset %d samples (%.2f ms)", offset, clock.samples_to_ms(u64(abs(offset))))
 			} else {
-				calib_status = "calibration failed — no click detected (need input)"
+				calib_status = "no click detected (need input)"
 			}
 		}
 
-		// Drain every onset event the audio thread produced this frame.
-		for {
-			ev, ok := audio_poll()
-			if !ok do break
-			onset_count += 1
-			last_onset_ms = clock.samples_to_ms(ev.sample_pos)
+		if audio_ok && store_ok {
+			drill_update(&d)
 		}
 
 		rl.BeginDrawing()
 		rl.ClearBackground({18, 18, 22, 255})
-
-		title := fmt.ctprintf("Guitar Trainer  ·  miniaudio %s", audio_version())
-		rl.DrawText(title, 24, 24, 20, {230, 230, 235, 255})
-
-		if audio_ok {
-			clock_ms := clock.samples_to_ms(audio_clock_now())
-			rl.DrawText(fmt.ctprintf("audio clock: %.2f s", clock_ms / 1000), 24, 64, 18, {150, 200, 150, 255})
-			rl.DrawText(fmt.ctprintf("onsets: %d", onset_count), 24, 92, 18, {200, 200, 150, 255})
-			rl.DrawText(fmt.ctprintf("last onset @ %.0f ms", last_onset_ms), 24, 120, 18, {180, 180, 180, 255})
-
-			// input level meter
-			lvl := audio_input_level()
-			bar_w := i32(clamp(lvl * 4, 0, 1) * 400)
-			rl.DrawText("input", 24, 160, 16, {150, 150, 160, 255})
-			rl.DrawRectangleLines(90, 158, 400, 20, {80, 80, 90, 255})
-			rl.DrawRectangle(90, 158, bar_w, 20, {120, 200, 120, 255})
-
-			rl.DrawText(fmt.ctprintf("calibration: %s", calib_status), 24, 200, 18, {180, 180, 220, 255})
-		} else {
-			rl.DrawText("audio device failed to initialize", 24, 64, 18, {220, 120, 120, 255})
-		}
-
-		rl.DrawText("clap/pluck to trigger an onset  ·  ESC to quit", 24, 440, 16, {110, 110, 120, 255})
+		drill_draw(&d, audio_ok, store_ok, calib_status)
 		rl.EndDrawing()
 	}
+}
+
+// drill_draw renders the minimal training HUD. Deliberately spare: no per-note
+// green/red, the target degree stays hidden until the answer is revealed.
+drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
+	rl.DrawText("Guitar Trainer", 24, 24, 22, {230, 230, 235, 255})
+
+	if !audio_ok {
+		rl.DrawText("audio device failed to initialize", 24, 70, 18, {220, 120, 120, 255})
+		return
+	}
+	if !store_ok {
+		rl.DrawText("trial log (trials.db) failed to open", 24, 70, 18, {220, 120, 120, 255})
+		return
+	}
+
+	rl.DrawText(fmt.ctprintf("Key:  %s major", music.note_name(d.trial.key.tonic_midi)), 24, 74, 20, {200, 210, 230, 255})
+
+	// phase line
+	phase_msg: cstring
+	switch d.phase {
+	case .Idle:
+		phase_msg = "…"
+	case .Listen:
+		phase_msg = "listen — then play the note you heard"
+	case .Confirm:
+		phase_msg = "…"
+	case .Feedback:
+		phase_msg = d.last_correct ? "yes — that's it" : "not quite"
+	}
+	col: rl.Color = {180, 180, 190, 255}
+	if d.phase == .Feedback {
+		col = d.last_correct ? {150, 210, 150, 255} : {210, 180, 140, 255}
+	}
+	rl.DrawText(phase_msg, 24, 120, 22, col)
+
+	// reveal target + what was played, only after an answer
+	if d.last_had_result {
+		played := d.last_detected >= 0 ? music.note_name(d.last_detected) : "—"
+		rl.DrawText(
+			fmt.ctprintf("last: target %s   ·   you played %s", music.note_name(d.last_target), played),
+			24, 160, 18, {150, 150, 160, 255},
+		)
+	}
+
+	// session stats
+	acc := d.total > 0 ? 100 * d.correct_count / d.total : 0
+	rl.DrawText(fmt.ctprintf("trials: %d    accuracy: %d%%", d.total, acc), 24, 210, 18, {170, 190, 170, 255})
+
+	// input meter
+	lvl := audio_input_level()
+	bar_w := i32(clamp(lvl * 4, 0, 1) * 400)
+	rl.DrawRectangleLines(24, 250, 400, 16, {80, 80, 90, 255})
+	rl.DrawRectangle(24, 250, bar_w, 16, {120, 200, 120, 255})
+
+	rl.DrawText(fmt.ctprintf("calibration: %s", calib_status), 24, 400, 16, {150, 150, 180, 255})
+	rl.DrawText("C calibrate (when idle)  ·  ESC quit", 24, 440, 16, {110, 110, 120, 255})
 }

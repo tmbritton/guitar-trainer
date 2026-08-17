@@ -16,6 +16,12 @@ CHORD_DUR :: clock.SAMPLE_RATE * 2 / 5 // 0.4 s per cadence chord
 TARGET_DUR :: clock.SAMPLE_RATE / 2 // 0.5 s target tone
 GAP :: clock.SAMPLE_RATE / 10 // 0.1 s gap (also lets the onset detector re-arm)
 
+LOW_TONIC :: 55 // G3  — comfortable tonic range for generated cadences
+HIGH_TONIC :: 67 // G4
+LISTEN_TIMEOUT :: clock.SAMPLE_RATE * 6 // 6 s to respond before a trial is a miss
+FEEDBACK_DUR :: clock.SAMPLE_RATE * 3 / 4 // 0.75 s feedback window
+START_LEAD :: clock.SAMPLE_RATE / 10 + 37 // small, deliberately non-hop-aligned
+
 // play_cadence schedules the four I-IV-V-I triads sequentially starting at
 // sample `at`, each lasting `chord_dur` samples. Returns the sample at which the
 // cadence ends (where a target tone can follow).
@@ -39,6 +45,146 @@ play_degree :: proc(target_midi: int, at: u64, dur: u64) -> u64 {
 	freq := detect.midi_to_freq(target_midi)
 	audio_play_tone(freq, at, dur, 0.6)
 	return at + dur
+}
+
+// ---- Frame-stepped drill state machine -----------------------------------
+//
+// The live drill must never block the render thread, so it advances one step
+// per frame instead of using the blocking trial_* helpers (which the self-tests
+// still use). Feedback is delayed to trial level and auditory (spec §5.1): a
+// correct answer replays the target as confirmation; a wrong one plays a short
+// dissonant "stumble". No per-note green/red.
+
+Drill_Phase :: enum {
+	Idle, // between trials; next update starts one
+	Listen, // cadence+target scheduled; waiting for / capturing the response
+	Confirm, // onset seen; waiting for its pitch window
+	Feedback, // brief post-answer window
+}
+
+Drill :: struct {
+	phase:             Drill_Phase,
+	trial:             game.Trial,
+	listen_start:      u64,
+	listen_timeout_at: u64,
+	onset_pos:         u64,
+	feedback_end:      u64,
+	db:                ^store.Store,
+	session_id:        i64,
+	scratch:           []f32,
+	window:            []f32,
+
+	// display / session stats
+	total:             int,
+	correct_count:     int,
+	last_had_result:   bool,
+	last_correct:      bool,
+	last_detected:     int,
+	last_target:       int,
+}
+
+drill_init :: proc(db: ^store.Store, session_id: i64) -> Drill {
+	return Drill {
+		phase = .Idle,
+		db = db,
+		session_id = session_id,
+		scratch = make([]f32, PITCH_WINDOW / 2),
+		window = make([]f32, PITCH_WINDOW),
+	}
+}
+
+drill_destroy :: proc(d: ^Drill) {
+	delete(d.scratch)
+	delete(d.window)
+}
+
+// drill_update advances the state machine by one frame. Non-blocking.
+drill_update :: proc(d: ^Drill) {
+	switch d.phase {
+	case .Idle:
+		d.trial = next_trial(d.db, LOW_TONIC, HIGH_TONIC)
+		start := audio_clock_now() + u64(START_LEAD)
+		d.listen_start = trial_play(d.trial, start)
+		d.listen_timeout_at = d.listen_start + u64(LISTEN_TIMEOUT)
+		d.phase = .Listen
+
+	case .Listen:
+		for {
+			ev, more := audio_poll()
+			if !more do break
+			if ev.sample_pos + PERIOD_FRAMES > d.listen_start {
+				d.onset_pos = ev.sample_pos
+				d.phase = .Confirm
+				break
+			}
+		}
+		if d.phase == .Listen && audio_clock_now() > d.listen_timeout_at {
+			drill_record(d, -1) // miss: no note played in time
+		}
+
+	case .Confirm:
+		if r, avail := audio_try_pitch(d.onset_pos, d.scratch, d.window); avail {
+			detected := r.voiced ? detect.freq_to_midi(r.freq) : -1
+			drill_record(d, detected)
+		} else if audio_clock_now() > d.onset_pos + u64(PITCH_WINDOW) + u64(clock.SAMPLE_RATE) {
+			drill_record(d, -1) // window never arrived (shouldn't happen)
+		}
+
+	case .Feedback:
+		if audio_clock_now() >= d.feedback_end {
+			d.phase = .Idle
+		}
+	}
+}
+
+// drill_record judges the detected note (detected < 0 means "no confident
+// note"), logs the trial, plays auditory feedback, and enters Feedback.
+drill_record :: proc(d: ^Drill, detected_midi: int) {
+	correct := detected_midi >= 0 && game.judge(d.trial, detected_midi)
+
+	response_ms: i64 = 0
+	onset_offset: i64 = 0
+	if detected_midi >= 0 {
+		response_ms = i64(clock.samples_to_ms(d.onset_pos - d.listen_start))
+		onset_offset = i64(d.onset_pos) - i64(d.listen_start) - audio_get_offset()
+	}
+	store.insert_trial(
+		d.db,
+		store.Trial_Row {
+			ts = d.session_id,
+			key = i64(d.trial.key.tonic_midi),
+			target_degree = i64(d.trial.target_degree),
+			target_midi = i64(d.trial.target_midi),
+			detected_midi = i64(detected_midi),
+			onset_offset_samples = onset_offset,
+			correct = correct,
+			response_ms = response_ms,
+			session_id = d.session_id,
+		},
+	)
+
+	d.total += 1
+	if correct do d.correct_count += 1
+	d.last_had_result = true
+	d.last_correct = correct
+	d.last_detected = detected_midi
+	d.last_target = d.trial.target_midi
+
+	at := audio_clock_now() + u64(clock.SAMPLE_RATE / 50) // +20 ms
+	drill_feedback(correct, d.trial.target_midi, at)
+	d.feedback_end = at + u64(FEEDBACK_DUR)
+	d.phase = .Feedback
+}
+
+// drill_feedback: correct replays the target as a confirming "lock in"; wrong
+// plays a brief dissonant minor-second beat — a stumble, not a red X.
+drill_feedback :: proc(correct: bool, target_midi: int, at: u64) {
+	if correct {
+		audio_play_tone(detect.midi_to_freq(target_midi), at, u64(clock.SAMPLE_RATE / 3), 0.4)
+	} else {
+		audio_play_tone(220, at, u64(clock.SAMPLE_RATE / 5), 0.3)
+		audio_play_tone(233, at, u64(clock.SAMPLE_RATE / 5), 0.3) // ~minor second -> beating
+	}
 }
 
 // next_trial builds the next trial, weighting the scale-degree choice by the

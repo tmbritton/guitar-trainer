@@ -64,9 +64,18 @@ store/           SQLite trial log (hand-written bindings) (unit-tested)
 tools/audioprobe standalone device enumerator
 ```
 
+## Headless self-tests (no hardware; loopback)
+
+`./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
+(offset math), `pitchcheck` (onset→window→YIN), `synthcheck` (voice engine),
+`drillcheck` (blocking trial loop), `drillsim` (live frame-stepped drill →
+SQLite), `storecheck` (sqlite write, cross-check with `sqlite3` CLI).
+
 ## Status
 
-M0 (audio spine) machinery complete and tested. Hardware-gated acceptance
-(<10 ms offset-corrected pick attack, real acoustic calibration) awaits a
-class-compliant USB Hi-Z interface — not yet purchased; onboard audio is used
-for development.
+M0 (audio spine), M1 (pitch), and M2 (v0 scale-degree drill) are code-complete
+and tested — the drill is playable end to end (`run_app`) and logs to
+`trials.db`. Hardware-gated acceptance (<10 ms offset-corrected pick attack, real
+acoustic calibration, plucked-note accuracy, and the M3 three-weeks-daily-use
+gate) awaits a class-compliant USB Hi-Z interface — not yet purchased; onboard
+audio + software loopback are used for development.

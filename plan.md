@@ -61,7 +61,7 @@ Install prerequisites and stand up a buildable skeleton. Prefer mise for Odin.
 - [x] **Story 3.3 — Trial loop.** *(game pkg judged pure; full cadence->target->listen->judge verified via `--drillcheck`, incl. octave-agnostic)* `game/degrees.odin` — cadence → random target scale degree (tone) → listen → judge detected pitch class against target → next trial. Octave-agnostic pitch-class judging to start (open question 12.3).
 - [x] **Story 3.4 — SQLite trial log.** *(hand-written sqlite3 bindings; insert/count/persist tested; `sqlite3` CLI cross-check via `--storecheck`)* `store.odin` — SQLite via C bindings; single `trials(id, ts, key, target_degree, target_midi, detected_midi, onset_offset_samples, correct, response_ms, session_id)` table; insert per trial. Resist adding tables.
 - [x] **Story 3.5 — Naive trial scheduling.** *(log-weighted degree selection; deterministic pick tested; store.degree_stats aggregation tested)* Start with simple selection (random / lightly weighted); instrument via the trial log, defer SM-2 vs. Kellman decision to data (open question 12.2).
-- [ ] **Story 3.6 — Drill UI & gamefeel.** Minimal on-screen loop with count-in, feedback that is delayed/phrase-level and auditory where possible (backing stumbles on wrong, locks on right) — not per-note green/red.
+- [x] **Story 3.6 — Drill UI & gamefeel.** *(frame-stepped drill state machine, delayed auditory feedback, per-trial SQLite logging; `--drillsim` PASS, live GUI runs)* Minimal on-screen loop with count-in, feedback that is delayed/phrase-level and auditory where possible (backing stumbles on wrong, locks on right) — not per-note green/red.
 
 ## Epic 4 — Daily-Use Gate & Instrumentation (Milestone M3)
 

@@ -36,7 +36,16 @@
 
 `--drillsim` drives the frame-stepped drill over loopback and shows trials being judged and written to SQLite with correct/incorrect recorded. The app runs the drill screen live. Unit tests still green.
 
+## Findings (implementation)
+
+- **Frame-stepped `Drill` state machine** (`drill.odin`): `Idle → Listen → Confirm → Feedback`. `drill_update` is non-blocking (drains onsets / retries `audio_try_pitch` one frame at a time), so the render loop never stalls. Reuses `trial_play` for scheduling and the 3.3 onset-boundary filter.
+- **Delayed, auditory feedback** (spec §5.1): correct → the target pitch replays as a "lock-in"; wrong → a brief ~minor-second beat (220/233 Hz) "stumble". Visual is minimal; the target note is hidden until revealed in the Feedback line. No per-note green/red.
+- **Logging:** one `session_id` per launch (unix time); every trial written to `trials.db` (cwd) including a miss (`detected_midi=-1`) on listen timeout; `onset_offset_samples` is offset-corrected via `audio_get_offset()`.
+- **`--drillsim` PASS:** drives the live state machine over loopback, injecting a scripted correct/wrong response per trial → 3 trials logged, `correct=2/3`, verified by reopening the DB. Proves the whole live loop (schedule → listen → confirm → judge → log) end to end.
+- **Live GUI:** runs cleanly on the display, initializes `trials.db`; a short smoke logs 0 trials (a trial takes ~2.3 s cadence+target then waits for a note) — correct behavior, no crash.
+
 ## Notes
 
-- The blocking `trial_play`/`trial_listen_and_judge` remain for the self-test; the live path is the non-blocking state machine so the window never freezes waiting for input.
+- The blocking `trial_play`/`trial_listen_and_judge` remain for the `--drillcheck` self-test; the live path is the non-blocking state machine so the window never freezes waiting for input.
+- Full "feels good to fail at" gamefeel is judged during M3 daily use with the real interface, not by adding juice now.
 - Gamefeel is deliberately minimal here; the open question (does the drill stay engaging past day 10) is answered by M3 daily use, not by adding juice now.

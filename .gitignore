@@ -4,5 +4,8 @@
 *.o
 *.obj
 
+# trial log (local data)
+/trials.db
+
 # scratch
 /tmp/
