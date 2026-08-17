@@ -58,6 +58,9 @@ ring/            SPSC lock-free ring buffer               (unit-tested)
 detect/          onset detection (pitch detection: Epic 2)(unit-tested)
 rtalloc/         audio-thread allocation guard            (unit-tested)
 calib/           round-trip offset math                   (unit-tested)
+music/           keys, scale degrees, cadence             (unit-tested)
+game/            trial generation + judging               (unit-tested)
+store/           SQLite trial log (hand-written bindings) (unit-tested)
 tools/audioprobe standalone device enumerator
 ```
 

@@ -8,6 +8,7 @@ import rl "vendor:raylib"
 import "clock"
 import "detect"
 import "game"
+import "store"
 
 WINDOW_W :: 800
 WINDOW_H :: 480
@@ -34,8 +35,29 @@ main :: proc() {
 			drillcheck()
 			return
 		}
+		if arg == "--storecheck" {
+			storecheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// storecheck writes a couple of trials to a DB so the result can be
+// cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
+storecheck :: proc() {
+	path :: "/tmp/gt_storecheck.db"
+	os.remove(path)
+	s, ok := store.open(path)
+	if !ok {
+		fmt.eprintln("FAIL: store.open")
+		os.exit(1)
+	}
+	defer store.close(&s)
+	store.insert_trial(&s, store.Trial_Row{ts = 1, target_midi = 60, detected_midi = 60, correct = true, session_id = 1})
+	store.insert_trial(&s, store.Trial_Row{ts = 2, target_midi = 62, detected_midi = 63, correct = false, session_id = 1})
+	fmt.printfln("wrote 2 trials to %s; count_trials=%d", path, store.count_trials(&s))
+	fmt.println("cross-check: sqlite3", path, "'select count(*), sum(correct) from trials'")
 }
 
 // drillcheck runs full trials over loopback, injecting a simulated "user"

@@ -36,7 +36,14 @@
 
 `odin test store` green: table created, rows inserted, counts correct, data persists across reopen. `sqlite3` CLI confirms the row count independently.
 
+## Findings (implementation)
+
+- **Bindings:** `foreign import sqlite "system:sqlite3"` with `@(default_calling_convention="c")`; opaque `sqlite3`/`sqlite3_stmt` structs. Only 10 entry points bound. `test.sh` now passes the Homebrew `-L`/rpath to every `odin test` (harmless for pure packages) so `store` links `-lsqlite3`.
+- **SQLite lock gotcha:** an insert statement stepped to `DONE` but not `reset` keeps its lock, so the *next* query (count) got `BUSY` and returned my `-1` sentinel. Fix: `sqlite3_reset` immediately after `sqlite3_step` in `insert_trial`.
+- **Parallel-test path collision:** Odin's test runner seeds every test's RNG with the *same* value, so `rand.int63()` produced identical temp filenames across the parallel tests → they hammered one shared DB (flaky BUSY / lost writes). Fix: a process-global atomic counter + pid for unique temp paths. Green across repeated runs.
+- **Independent cross-check:** `--storecheck` writes 2 rows; `sqlite3` CLI reports `2|1|60,62` and the schema matches spec §9.6 exactly.
+
 ## Notes
 
-- `odin test` needs the sqlite lib at link time. If the foreign block's `foreign import` doesn't auto-link, pass linker flags to the test invocation; capture the exact command in this file and in `test.sh` (the `store` package may need special handling vs the pure packages).
+- `odin test` needs the sqlite lib at link time. `test.sh` supplies the Homebrew `-L`/rpath for all packages.
 - Wiring the drill to actually write rows (session_id, response_ms, onset offset) happens in Story 3.6 when the loop is interactive; this story is just the storage layer + its tests.

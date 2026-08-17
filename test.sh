@@ -11,12 +11,17 @@ if [ ! -f "$ODIN_ROOT/vendor/miniaudio/lib/miniaudio.a" ]; then
 	ODIN_ROOT="$ODIN_ROOT" "$ODIN_ROOT/vendor/miniaudio/src/build_miniaudio.sh"
 fi
 
-packages=(clock ring detect rtalloc calib music game)
+# Homebrew lib path so packages that link system libs (e.g. store -> sqlite3)
+# resolve at test-link time. Harmless for the pure packages.
+BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
+LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB}"
+
+packages=(clock ring detect rtalloc calib music game store)
 fail=0
 for pkg in "${packages[@]}"; do
 	compgen -G "$pkg/*.odin" >/dev/null || continue # package not created yet
 	printf '=== %-8s ' "$pkg"
-	out="$(mise exec -- odin test "$pkg" 2>&1)"
+	out="$(mise exec -- odin test "$pkg" -extra-linker-flags:"${LINK_FLAGS}" 2>&1)"
 	if echo "$out" | grep -q "All tests were successful"; then
 		echo "$out" | grep -oE "Finished [0-9]+ tests.*successful\."
 	else
