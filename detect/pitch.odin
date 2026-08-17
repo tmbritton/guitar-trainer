@@ -53,12 +53,13 @@ detect_pitch :: proc(
 		}
 	}
 
-	// Step 3: absolute threshold — first local min below `threshold`.
+	// Step 3: absolute threshold — first dip below `threshold`, then descend to
+	// that dip's actual local minimum (canonical YIN). Descending matters: it
+	// picks the true minimum lag, which the parabolic step then refines.
 	tau := -1
 	for i in 2 ..< tau_max - 1 {
-		if d[i] < threshold && d[i] <= d[i + 1] {
+		if d[i] < threshold {
 			tau = i
-			// walk down to the actual local minimum of this dip
 			for tau + 1 < tau_max && d[tau + 1] < d[tau] {
 				tau += 1
 			}

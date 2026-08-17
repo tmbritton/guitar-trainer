@@ -22,7 +22,8 @@ Per-story implementation plans live in `docs/epic-{N}/story-{M}.md`.
 ## Test & verify
 
 - `./test.sh` — unit tests for all pure-logic packages (clock, ring, detect,
-  rtalloc, calib). No hardware needed.
+  rtalloc, calib, music, game). Skips a package whose dir doesn't exist yet. No
+  hardware needed.
 - `./guitar-trainer --audiocheck` — headless: opens the real duplex device,
   asserts the master clock advances. Verifies the audio spine is live.
 - `./guitar-trainer --calibcheck` — headless: runs calibration over an internal

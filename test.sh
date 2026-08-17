@@ -11,9 +11,10 @@ if [ ! -f "$ODIN_ROOT/vendor/miniaudio/lib/miniaudio.a" ]; then
 	ODIN_ROOT="$ODIN_ROOT" "$ODIN_ROOT/vendor/miniaudio/src/build_miniaudio.sh"
 fi
 
-packages=(clock ring detect rtalloc calib)
+packages=(clock ring detect rtalloc calib music game)
 fail=0
 for pkg in "${packages[@]}"; do
+	compgen -G "$pkg/*.odin" >/dev/null || continue # package not created yet
 	printf '=== %-8s ' "$pkg"
 	out="$(mise exec -- odin test "$pkg" 2>&1)"
 	if echo "$out" | grep -q "All tests were successful"; then
