@@ -93,6 +93,24 @@ degree_stats_aggregates_per_degree :: proc(t: ^testing.T) {
 }
 
 @(test)
+degree_stats_all_wrong_degree :: proc(t: ^testing.T) {
+	path, cpath := temp_db()
+	defer cleanup_db(path, cpath)
+	s, ok := open(cpath)
+	testing.expect(t, ok, "open should succeed")
+	defer close(&s)
+
+	// degree 4 attempted 3x, never correct -> attempts 3, correct 0 (SUM=0).
+	insert_trial(&s, degree_row(4, 65, false))
+	insert_trial(&s, degree_row(4, 65, false))
+	insert_trial(&s, degree_row(4, 65, false))
+
+	attempts, correct := degree_stats(&s)
+	testing.expect_value(t, attempts[4], i64(3))
+	testing.expect_value(t, correct[4], i64(0))
+}
+
+@(test)
 multiple_inserts_persist_across_reopen :: proc(t: ^testing.T) {
 	path, cpath := temp_db()
 	defer cleanup_db(path, cpath)

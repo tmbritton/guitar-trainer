@@ -44,6 +44,20 @@ pick_degree_favors_weak_at_midpoint :: proc(t: ^testing.T) {
 }
 
 @(test)
+pick_degree_favors_unseen :: proc(t: ^testing.T) {
+	// degree 4 never played (weight 4); all others perfect (weight 1). deg4
+	// spans the cumulative band [3, 7) of total 10, so u=0.5 (target 5.0) picks it.
+	s: Degree_Stats
+	for d in 1 ..= 7 {
+		if d != 4 {
+			s.attempts[d] = 10
+			s.correct[d] = 10
+		}
+	}
+	testing.expect_value(t, pick_degree(s, 0.5), 4)
+}
+
+@(test)
 pick_degree_edges :: proc(t: ^testing.T) {
 	s := stats_weak_at(3)
 	testing.expect_value(t, pick_degree(s, 0.0), 1) // first band
