@@ -1,0 +1,8 @@
+# build artifacts
+/guitar-trainer
+/tools/audioprobe/audioprobe
+*.o
+*.obj
+
+# scratch
+/tmp/
