@@ -91,6 +91,25 @@ insert_trial :: proc(s: ^Store, row: Trial_Row) -> bool {
 	return rc == SQLITE_DONE
 }
 
+// degree_stats returns per-degree attempt and correct counts (indexed 1..7;
+// index 0 unused), aggregated from the whole trial log. Feeds the scheduler.
+degree_stats :: proc(s: ^Store) -> (attempts: [8]i64, correct: [8]i64) {
+	stmt: ^sqlite3_stmt
+	sql: cstring : "SELECT target_degree, COUNT(*), COALESCE(SUM(correct),0) FROM trials GROUP BY target_degree;"
+	if sqlite3_prepare_v2(s.db, sql, -1, &stmt, nil) != SQLITE_OK {
+		return
+	}
+	defer sqlite3_finalize(stmt)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		deg := sqlite3_column_int64(stmt, 0)
+		if deg >= 1 && deg <= 7 {
+			attempts[deg] = sqlite3_column_int64(stmt, 1)
+			correct[deg] = sqlite3_column_int64(stmt, 2)
+		}
+	}
+	return
+}
+
 // count_trials returns the number of rows (diagnostic / progress helper).
 count_trials :: proc(s: ^Store) -> i64 {
 	stmt: ^sqlite3_stmt

@@ -39,6 +39,13 @@
 
 `odin test game` and `odin test store` green: weighting favors weak/unseen degrees, deterministic pick is correct, and the log aggregation matches inserted data. The drill (Story 3.6) will feed `degree_stats` into `new_trial_weighted`.
 
+## Findings (implementation)
+
+- `game/schedule.odin`: `degree_weight` (unseen → `UNSEEN_WEIGHT=4`, else `1 + (1-accuracy)*K`, `K=3`), deterministic `pick_degree` (cumulative walk, `u` clamped below 1), `select_degree` (RNG wrapper), `new_trial_weighted`. 7 new tests; `game` now 10 tests.
+- `store.degree_stats` returns `(attempts, correct: [8]i64)` indexed 1..7 via a `GROUP BY target_degree` query (COALESCE(SUM(correct),0) so a degree with rows always yields a number); statement finalized via defer. 1 new test.
+- Wiring lives in `drill.odin::next_trial` (package main), which converts the store's `[8]i64` stats into `game.Degree_Stats` and calls `new_trial_weighted` — keeping `store` independent of `game`.
+- 65 unit tests across 8 packages green.
+
 ## Notes
 
 - Keep `K` small (e.g. 2–3) so early sessions stay close to uniform; the whole point is to instrument first and tune from the trial log later, not to over-fit a policy now.

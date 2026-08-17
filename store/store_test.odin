@@ -64,6 +64,34 @@ insert_increments_count :: proc(t: ^testing.T) {
 	testing.expect_value(t, count_trials(&s), i64(1))
 }
 
+degree_row :: proc(degree, midi: i64, correct: bool) -> Trial_Row {
+	r := sample_row(midi, correct)
+	r.target_degree = degree
+	return r
+}
+
+@(test)
+degree_stats_aggregates_per_degree :: proc(t: ^testing.T) {
+	path, cpath := temp_db()
+	defer cleanup_db(path, cpath)
+	s, ok := open(cpath)
+	testing.expect(t, ok, "open should succeed")
+	defer close(&s)
+
+	// degree 1: 2 attempts, 1 correct; degree 2: 1 attempt, 1 correct
+	insert_trial(&s, degree_row(1, 60, true))
+	insert_trial(&s, degree_row(1, 60, false))
+	insert_trial(&s, degree_row(2, 62, true))
+
+	attempts, correct := degree_stats(&s)
+	testing.expect_value(t, attempts[1], i64(2))
+	testing.expect_value(t, correct[1], i64(1))
+	testing.expect_value(t, attempts[2], i64(1))
+	testing.expect_value(t, correct[2], i64(1))
+	testing.expect_value(t, attempts[3], i64(0)) // unseen
+	testing.expect_value(t, correct[3], i64(0))
+}
+
 @(test)
 multiple_inserts_persist_across_reopen :: proc(t: ^testing.T) {
 	path, cpath := temp_db()

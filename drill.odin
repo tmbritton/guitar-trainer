@@ -10,6 +10,7 @@ import "clock"
 import "detect"
 import "game"
 import "music"
+import "store"
 
 CHORD_DUR :: clock.SAMPLE_RATE * 2 / 5 // 0.4 s per cadence chord
 TARGET_DUR :: clock.SAMPLE_RATE / 2 // 0.5 s target tone
@@ -38,6 +39,18 @@ play_degree :: proc(target_midi: int, at: u64, dur: u64) -> u64 {
 	freq := detect.midi_to_freq(target_midi)
 	audio_play_tone(freq, at, dur, 0.6)
 	return at + dur
+}
+
+// next_trial builds the next trial, weighting the scale-degree choice by the
+// per-degree accuracy in the trial log (weak/unseen degrees favored).
+next_trial :: proc(s: ^store.Store, low_tonic, high_tonic: int) -> game.Trial {
+	attempts, correct := store.degree_stats(s)
+	stats: game.Degree_Stats
+	for d in 1 ..= 7 {
+		stats.attempts[d] = int(attempts[d])
+		stats.correct[d] = int(correct[d])
+	}
+	return game.new_trial_weighted(low_tonic, high_tonic, stats)
 }
 
 // trial_play schedules a trial's audio — cadence to establish the key, then the
