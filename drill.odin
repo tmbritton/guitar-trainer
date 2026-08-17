@@ -75,7 +75,12 @@ trial_listen_and_judge :: proc(
 		for {
 			ev, more := audio_poll()
 			if !more do break
-			if ev.sample_pos >= listen_start {
+			// Onset timestamps are quantized to the start of the callback hop, so
+			// a real attack landing right at listen_start reports up to one period
+			// early. Quantization only ever rounds down, so back the boundary off
+			// by one period; stale cadence/target onsets are thousands of samples
+			// earlier and still excluded.
+			if ev.sample_pos + PERIOD_FRAMES > listen_start {
 				onset_pos = ev.sample_pos
 				got_onset = true
 				break

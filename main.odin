@@ -64,7 +64,9 @@ drillcheck :: proc() {
 		trial := game.new_trial(60, 60) // C major, random degree
 		response_midi := trial.target_midi + c.response_shift
 
-		start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10)
+		// Deliberately non-hop-aligned lead (+37) so listen_start lands mid-block,
+		// exercising the onset-quantization boundary the filter must tolerate.
+		start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10 + 37)
 		listen_start := trial_play(trial, start)
 		// inject the simulated user's note at the listen point
 		audio_play_tone(detect.midi_to_freq(response_midi), listen_start, u64(clock.SAMPLE_RATE / 2), 0.6)

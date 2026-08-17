@@ -15,6 +15,7 @@ import "detect"
 import "ring"
 
 RING_CAP :: 1024
+PERIOD_FRAMES :: 128 // audio callback period; also the onset-timestamp quantization (a hop)
 CLICK_LEN :: 64 // samples of full-scale burst emitted for a calibration click
 CLICK_DISARMED :: max(u64)
 HIST_CAP :: 16384 // rolling input history (~341 ms at 48 kHz); power of two
@@ -63,7 +64,7 @@ audio_init :: proc() -> bool {
 
 	cfg := ma.device_config_init(.duplex)
 	cfg.sampleRate = clock.SAMPLE_RATE
-	cfg.periodSizeInFrames = 128
+	cfg.periodSizeInFrames = PERIOD_FRAMES
 	cfg.capture.format = .f32
 	cfg.capture.channels = 1
 	cfg.playback.format = .f32

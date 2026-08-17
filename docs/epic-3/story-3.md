@@ -50,3 +50,7 @@
 - `game` package: 3 tests green; wired into `./test.sh` (now 7 packages, 54 unit tests total).
 - Timing constants: cadence chord 0.4 s, target 0.5 s, 0.1 s gaps. The 0.1 s gap before `listen_start` exceeds the onset refractory (50 ms) so the detector re-arms before the response.
 - With hardware, the same `trial_play` / `trial_listen_and_judge` pair runs against the real pickup; only the injected "user" tone is replaced by an actual pluck.
+
+## Post-review fix
+
+- **Onset-quantization boundary (review confidence 80):** onset timestamps are the *start* of the callback hop, so a response attacking right at `listen_start` reports up to one period early and was being discarded by the `>= listen_start` filter. `--drillcheck` had passed only because a coincidental hop-aligned lead hid it. Fix: filter on `ev.sample_pos + PERIOD_FRAMES > listen_start` (quantization only rounds down; stale cadence/target onsets are thousands of samples earlier and stay excluded). `--drillcheck` now uses a deliberately non-aligned lead (+37) so `listen_start` is mid-block and the boundary path is actually exercised. Still PASS.
