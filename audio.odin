@@ -38,20 +38,37 @@ g_tone_bits: u32 // atomic: test-tone frequency as f32 bits (0 = off)
 g_tone_phase: f32 // callback-local phase accumulator for the test tone
 
 MAX_VOICES :: 32 // a full cadence holds 12 slots (schedule-time..end); leaves ample headroom for target + overlap
+KS_MAX :: 1024 // max delay-line length (supports fundamentals down to ~47 Hz)
+KS_DAMP :: 0.9999 // Karplus-Strong loop gain per sample: ~1 s guitar-like sustain
 
-// A scheduled sine voice. Main thread activates one (writes fields, then sets
-// `active` with release); the callback owns `phase` and deactivates the voice
-// when it ends. Single-activator/single-deactivator => no lock needed.
+// A scheduled plucked-string voice (Karplus-Strong). Main thread activates one
+// (writes fields, then sets `active` with release); the callback owns the delay
+// line and deactivates the voice when it ends. Single-activator /
+// single-deactivator => no lock needed.
 Voice :: struct {
-	freq:   f32,
-	start:  u64,
-	end:    u64,
-	amp:    f32,
-	phase:  f32,
-	active: u32, // atomic 0/1
+	freq:    f32,
+	start:   u64,
+	end:     u64,
+	amp:     f32,
+	active:  u32, // atomic 0/1
+	ks_init: bool, // callback: delay line seeded?
+	ks_len:  int, // delay-line length = round(sample_rate/freq)
+	ks_idx:  int, // read/write cursor
+	ks_buf:  [KS_MAX]f32,
 }
 
 g_voices: [MAX_VOICES]Voice
+g_ks_rng: u32 = 0x1234_5678 // xorshift state; audio thread only
+
+@(private = "file")
+ks_noise :: proc() -> f32 {
+	x := g_ks_rng
+	x = x ~ (x << 13)
+	x = x ~ (x >> 17)
+	x = x ~ (x << 5)
+	g_ks_rng = x
+	return f32(x) / f32(max(u32)) * 2 - 1 // -1..1
+}
 
 // audio_version returns the linked miniaudio C library version. Referencing an
 // FFI symbol here forces the linker to pull in vendor:miniaudio's static lib.
@@ -138,7 +155,7 @@ audio_play_tone :: proc(freq: f32, start, dur: u64, amp: f32) -> bool {
 		v.start = start
 		v.end = start + dur
 		v.amp = amp
-		v.phase = 0
+		v.ks_init = false // callback seeds the delay line when the note starts
 		intrinsics.atomic_store(&v.active, 1) // release: fields above are now visible
 		return true
 	}
@@ -154,16 +171,29 @@ mix_voices :: proc(out: []f32, start: u64) {
 		if intrinsics.atomic_load(&v.active) == 0 {
 			continue
 		}
-		step := 2 * math.PI * v.freq / clock.SAMPLE_RATE
 		for j in 0 ..< n {
 			t := start + u64(j)
-			if t >= v.start && t < v.end {
-				out[j] += v.amp * math.sin(v.phase)
-				v.phase += step
-				if v.phase > 2 * math.PI {
-					v.phase -= 2 * math.PI
-				}
+			if t < v.start || t >= v.end {
+				continue
 			}
+			// Seed the delay line with a noise burst on the pluck.
+			if !v.ks_init {
+				N := int(math.round(clock.SAMPLE_RATE / v.freq))
+				v.ks_len = clamp(N, 2, KS_MAX)
+				for k in 0 ..< v.ks_len {
+					v.ks_buf[k] = ks_noise()
+				}
+				v.ks_idx = 0
+				v.ks_init = true
+			}
+			// Karplus-Strong: emit the current sample, then replace it with the
+			// damped average of it and its neighbour (a one-pole lowpass in the
+			// feedback loop -> a decaying, string-like tone).
+			cur := v.ks_buf[v.ks_idx]
+			nxt := v.ks_buf[(v.ks_idx + 1) % v.ks_len]
+			v.ks_buf[v.ks_idx] = KS_DAMP * 0.5 * (cur + nxt)
+			out[j] += v.amp * cur
+			v.ks_idx = (v.ks_idx + 1) % v.ks_len
 		}
 		if start + u64(n) >= v.end {
 			intrinsics.atomic_store(&v.active, 0)
@@ -199,7 +229,12 @@ audio_copy_window :: proc(start_pos: u64, out: []f32) -> bool {
 	return true
 }
 
+PITCH_ATTACK_SKIP :: 256 // skip the noisy pluck transient (and any sub-hop silence prefix) before analysis
+
 // audio_try_pitch confirms the pitch of an onset once its window is available.
+// The analysis window starts a little after the onset so the plucked-string
+// attack transient (a noise burst) and the hop-quantized silence prefix don't
+// skew the pitch estimate.
 audio_try_pitch :: proc(
 	onset_pos: u64,
 	scratch: []f32,
@@ -208,7 +243,7 @@ audio_try_pitch :: proc(
 	detect.Pitch_Result,
 	bool,
 ) {
-	if !audio_copy_window(onset_pos, window) {
+	if !audio_copy_window(onset_pos + PITCH_ATTACK_SKIP, window) {
 		return {}, false
 	}
 	return detect.detect_pitch(window, scratch), true

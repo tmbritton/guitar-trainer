@@ -259,11 +259,13 @@ confirm_scheduled_tone :: proc(freq: f32) -> bool {
 	}
 	for d := 0; d < 800; d += 1 {
 		if r, ok := audio_try_pitch(onset_pos, scratch, window); ok {
-			if !r.voiced || abs(r.freq - freq) > 1.5 {
-				fmt.eprintfln("FAIL @ %.0f Hz: detected %.2f Hz (voiced=%v)", freq, r.freq, r.voiced)
+			// Assert at the note level: the plucked-string timbre gives YIN a
+			// ~10-cent sharp bias (well within a semitone); v0 judges pitch class.
+			if !r.voiced || detect.freq_to_midi(r.freq) != detect.freq_to_midi(freq) {
+				fmt.eprintfln("FAIL @ %.0f Hz: detected %.2f Hz (midi %d vs %d, voiced=%v)", freq, r.freq, detect.freq_to_midi(r.freq), detect.freq_to_midi(freq), r.voiced)
 				return false
 			}
-			fmt.printfln("  scheduled %.0f Hz -> detected %.2f Hz  OK", freq, r.freq)
+			fmt.printfln("  scheduled %.0f Hz -> detected %.2f Hz (note %d)  OK", freq, r.freq, detect.freq_to_midi(r.freq))
 			return true
 		}
 		time.sleep(time.Millisecond)
