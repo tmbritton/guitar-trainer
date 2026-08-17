@@ -543,7 +543,7 @@ drill_draw_progress :: proc(d: ^Drill) {
 			trend = "steady"
 		}
 	}
-	rl.DrawText(fmt.ctprintf("recent 20: %d%%  (%s)", recent_pct, trend), 24, 118, 18, {180, 200, 180, 255})
+	rl.DrawText(fmt.ctprintf("recent %d: %d%%  (%s)", racc_a, recent_pct, trend), 24, 118, 18, {180, 200, 180, 255})
 
 	// per-degree accuracy bars
 	att_d, cor_d := store.degree_stats(d.db)

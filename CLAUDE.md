@@ -67,9 +67,10 @@ tools/audioprobe standalone device enumerator
 ## Headless self-tests (no hardware; loopback)
 
 `./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
-(offset math), `pitchcheck` (onset→window→YIN), `synthcheck` (voice engine),
-`drillcheck` (blocking trial loop), `drillsim` (live frame-stepped drill →
-SQLite), `storecheck` (sqlite write, cross-check with `sqlite3` CLI).
+(offset math), `pitchcheck` (onset→window→YIN), `synthcheck` (Karplus-Strong
+voice engine), `drillcheck` (blocking trial loop), `drillsim` (live frame-stepped
+drill → SQLite), `storecheck` (sqlite write, cross-check with `sqlite3` CLI),
+`progresscheck` (progress aggregates from the log).
 
 ## Status
 
