@@ -7,6 +7,7 @@ import rl "vendor:raylib"
 
 import "clock"
 import "detect"
+import "game"
 
 WINDOW_W :: 800
 WINDOW_H :: 480
@@ -29,8 +30,75 @@ main :: proc() {
 			synthcheck()
 			return
 		}
+		if arg == "--drillcheck" {
+			drillcheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// drillcheck runs full trials over loopback, injecting a simulated "user"
+// response, to verify cadence -> target -> listen -> judge end to end.
+drillcheck :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init returned false")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	audio_set_loopback(true)
+
+	Case :: struct {
+		name:          string,
+		response_shift: int, // semitones added to the target for the injected note
+		want_correct:  bool,
+	}
+	cases := []Case {
+		{"exact match", 0, true},
+		{"wrong note (+1 semitone)", 1, false},
+		{"octave-shifted match (+12)", 12, true},
+	}
+
+	ok_all := true
+	for c in cases {
+		trial := game.new_trial(60, 60) // C major, random degree
+		response_midi := trial.target_midi + c.response_shift
+
+		start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10)
+		listen_start := trial_play(trial, start)
+		// inject the simulated user's note at the listen point
+		audio_play_tone(detect.midi_to_freq(response_midi), listen_start, u64(clock.SAMPLE_RATE / 2), 0.6)
+
+		detected, correct, ok := trial_listen_and_judge(trial, listen_start, u64(clock.SAMPLE_RATE))
+		if !ok {
+			fmt.eprintfln("FAIL [%s]: no confident response detected", c.name)
+			ok_all = false
+		} else if correct != c.want_correct {
+			fmt.eprintfln(
+				"FAIL [%s]: target deg %d (MIDI %d), played MIDI %d, detected %d -> correct=%v, wanted %v",
+				c.name, trial.target_degree, trial.target_midi, response_midi, detected, correct, c.want_correct,
+			)
+			ok_all = false
+		} else {
+			fmt.printfln(
+				"  [%s] target deg %d, played MIDI %d, detected MIDI %d -> correct=%v  OK",
+				c.name, trial.target_degree, response_midi, detected, correct,
+			)
+		}
+
+		// let the injected tone finish so the detector re-arms
+		for audio_clock_now() < listen_start + u64(clock.SAMPLE_RATE * 3 / 5) {
+			for {
+				_, more := audio_poll()
+				if !more do break
+			}
+			time.sleep(5 * time.Millisecond)
+		}
+	}
+	if !ok_all {
+		os.exit(1)
+	}
+	fmt.println("PASS: trial loop (cadence -> target -> listen -> judge) works over loopback")
 }
 
 // synthcheck schedules sine voices and confirms them back over loopback,

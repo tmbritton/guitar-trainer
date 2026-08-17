@@ -40,3 +40,13 @@
 ## Notes
 
 - The cadence and target tones also generate onsets; `trial_listen_and_judge` only considers onsets at/after `listen_start`, which is set past the target's end.
+
+## Findings (implementation)
+
+- **`--drillcheck` PASS** over loopback, all three injected responses judged as expected:
+  - exact match (deg 2, MIDI 62) → correct
+  - wrong note (+1 semitone, MIDI 68) → incorrect
+  - octave-shifted (+12, MIDI 74) → correct (proves octave-agnostic judging end to end)
+- `game` package: 3 tests green; wired into `./test.sh` (now 7 packages, 54 unit tests total).
+- Timing constants: cadence chord 0.4 s, target 0.5 s, 0.1 s gaps. The 0.1 s gap before `listen_start` exceeds the onset refractory (50 ms) so the detector re-arms before the response.
+- With hardware, the same `trial_play` / `trial_listen_and_judge` pair runs against the real pickup; only the injected "user" tone is replaced by an actual pluck.
