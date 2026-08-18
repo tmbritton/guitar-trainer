@@ -16,8 +16,8 @@ CHORD_DUR :: clock.SAMPLE_RATE * 2 / 5 // 0.4 s per cadence chord
 TARGET_DUR :: clock.SAMPLE_RATE / 2 // 0.5 s target tone
 GAP :: clock.SAMPLE_RATE / 10 // 0.1 s gap (also lets the onset detector re-arm)
 
-LOW_TONIC :: 55 // G3  — comfortable tonic range for generated cadences
-HIGH_TONIC :: 67 // G4
+LOW_TONIC :: 45 // A2  — heavy guitar register (Iommi/Page heft); still in YIN's range
+HIGH_TONIC :: 55 // G3
 LISTEN_TIMEOUT :: clock.SAMPLE_RATE * 6 // 6 s to respond before a trial is a miss
 FEEDBACK_DUR :: clock.SAMPLE_RATE * 3 / 4 // 0.75 s feedback window
 START_LEAD :: clock.SAMPLE_RATE / 10 + 37 // small, deliberately non-hop-aligned

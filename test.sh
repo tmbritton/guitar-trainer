@@ -16,7 +16,7 @@ fi
 BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
 LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB}"
 
-packages=(clock ring detect rtalloc calib music game store)
+packages=(clock ring detect rtalloc calib music game store amp)
 fail=0
 for pkg in "${packages[@]}"; do
 	compgen -G "$pkg/*.odin" >/dev/null || continue # package not created yet

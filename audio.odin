@@ -10,6 +10,7 @@ import "core:math"
 import "core:mem"
 import ma "vendor:miniaudio"
 
+import "amp"
 import "clock"
 import "detect"
 import "ring"
@@ -59,6 +60,7 @@ Voice :: struct {
 
 g_voices: [MAX_VOICES]Voice
 g_ks_rng: u32 = 0x1234_5678 // xorshift state; audio thread only
+g_amp: amp.Amp // downstream, playback-only overdrive (never touches detection)
 
 @(private = "file")
 ks_noise :: proc() -> f32 {
@@ -78,6 +80,7 @@ audio_version :: proc() -> string {
 
 audio_init :: proc() -> bool {
 	g_onset = detect.default_onset_detector()
+	g_amp = amp.amp_make()
 
 	cfg := ma.device_config_init(.duplex)
 	cfg.sampleRate = clock.SAMPLE_RATE
@@ -308,4 +311,8 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 
 	// Publish an approximate input level for the UI meter (display only).
 	intrinsics.atomic_store(&g_input_rms_bits, transmute(u32)detect.rms(src))
+
+	// Amp-sim is downstream of detection (spec §9.3): overdrive the *playback*
+	// only, after the dry signal has been captured for onset/pitch/history.
+	amp.amp_block(&g_amp, out)
 }
