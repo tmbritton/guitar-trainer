@@ -7,14 +7,15 @@ package main
 // synth, so headless tests are unaffected.
 
 import "core:c"
+import "core:math/rand"
 import "core:strings"
 
 import "clock"
 import "music"
 import "tsf"
 
-SF_VEL :: 1.0
 SF_TAIL :: clock.SAMPLE_RATE // 1 s release ring-out rendered after the notes
+STRUM_GAP :: clock.SAMPLE_RATE / 60 // ~17 ms between strummed chord notes
 
 Soundfont :: struct {
 	handle:       ^tsf.TSF,
@@ -145,10 +146,24 @@ sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
 	}
 	for g in groups {
 		tsf.note_off_all(h)
-		for note in g {
-			tsf.note_on(h, preset, c.int(note), SF_VEL)
+		// Strum: stagger the chord's notes instead of a simultaneous "organ"
+		// attack, and vary pick strength (velocity) so it isn't robotic. The
+		// staggered time is taken out of the note's hold so the group still
+		// lasts `dur` (keeps the drill's timing exact).
+		strum := len(g) > 1 ? STRUM_GAP : 0
+		played := 0
+		for note, ni in g {
+			if ni > 0 {
+				played += render(h, cursor + played, strum)
+			}
+			vel := rand.float32_range(0.72, 1.0)
+			tsf.note_on(h, preset, c.int(note), vel)
 		}
-		cursor += render(h, cursor, dur)
+		remain := dur - played
+		if remain > 0 {
+			played += render(h, cursor + played, remain)
+		}
+		cursor += played
 	}
 	tsf.note_off_all(h)
 	cursor += render(h, cursor, SF_TAIL)
