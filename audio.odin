@@ -66,7 +66,7 @@ g_amp_enabled: u32 = 1 // atomic; disabled when a (pre-distorted) soundfont is i
 // Sample-playback voices: PCM rendered on the main thread (e.g. by the
 // SoundFont synth) and mixed here. Fixed buffers, no allocation in the callback.
 SAMPLE_VOICES :: 6
-SAMPLE_BUF_LEN :: 160000 // ~3.3 s at 48 kHz (a whole cadence + release tail)
+SAMPLE_BUF_LEN :: 360000 // ~7.5 s at 48 kHz (fits a cadence, or a full riff + tail)
 
 Sample_Voice :: struct {
 	len:    int,

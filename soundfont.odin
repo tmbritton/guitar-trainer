@@ -124,52 +124,81 @@ sf_preset_name :: proc() -> string {
 	return string(tsf.get_presetname(g_sf.handle, c.int(g_sf.preset)))
 }
 
-// sf_render renders a sequence of note groups (each held for `dur` samples, in
-// order) plus a release tail, into the scratch buffer; returns the filled slice.
-sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
-	// With the neural amp active, render from the CLEAN DI font so the amp model
-	// gets a clean input; otherwise render from the (sampled-amp) font.
-	h := g_sf.handle
-	preset := c.int(g_sf.preset)
+// A timed musical event: play `notes` (a chord; empty = a rest) held for `hold`
+// samples. Feeds sf_render_seq for arbitrary rhythms.
+Note_Event :: struct {
+	notes: []int,
+	hold:  int,
+}
+
+// sf_source picks the render font: the clean DI when the neural amp is active
+// (so it gets a clean input), else the selected sampled-amp font.
+@(private)
+sf_source :: proc() -> (^tsf.TSF, c.int) {
 	if nam_amp_active() && g_di != nil {
-		h = g_di
-		preset = 0
+		return g_di, 0
 	}
-	cursor := 0
-	render :: proc(h: ^tsf.TSF, at: int, n: int) -> int {
-		m := min(n, SAMPLE_BUF_LEN - at)
-		if m <= 0 {
-			return 0
-		}
-		tsf.render_float(h, raw_data(g_sf_render[at:]), c.int(m), 0)
-		return m
+	return g_sf.handle, c.int(g_sf.preset)
+}
+
+@(private)
+sf_chunk :: proc(h: ^tsf.TSF, at, n: int) -> int {
+	m := min(n, SAMPLE_BUF_LEN - at)
+	if m <= 0 {
+		return 0
 	}
-	for g in groups {
-		tsf.note_off_all(h)
-		// Strum: stagger the chord's notes instead of a simultaneous "organ"
-		// attack, and vary pick strength (velocity) so it isn't robotic. The
-		// staggered time is taken out of the note's hold so the group still
-		// lasts `dur` (keeps the drill's timing exact).
-		strum := len(g) > 1 ? STRUM_GAP : 0
-		played := 0
-		for note, ni in g {
-			if ni > 0 {
-				played += render(h, cursor + played, strum)
-			}
-			vel := rand.float32_range(0.72, 1.0)
-			tsf.note_on(h, preset, c.int(note), vel)
-		}
-		remain := dur - played
-		if remain > 0 {
-			played += render(h, cursor + played, remain)
-		}
-		cursor += played
-	}
+	tsf.render_float(h, raw_data(g_sf_render[at:]), c.int(m), 0)
+	return m
+}
+
+// sf_group plays one chord into g_sf_render at `at`, held for `hold` samples.
+// Humanized: the chord is strummed (notes staggered by STRUM_GAP, taken out of
+// the hold so the group still lasts `hold`), and each note gets a random pick
+// velocity. Empty `notes` renders a rest.
+@(private)
+sf_group :: proc(h: ^tsf.TSF, preset: c.int, notes: []int, hold, at: int) -> int {
 	tsf.note_off_all(h)
-	cursor += render(h, cursor, SF_TAIL)
+	played := 0
+	strum := len(notes) > 1 ? STRUM_GAP : 0
+	for note, ni in notes {
+		if ni > 0 {
+			played += sf_chunk(h, at + played, strum)
+		}
+		tsf.note_on(h, preset, c.int(note), rand.float32_range(0.72, 1.0))
+	}
+	if remain := hold - played; remain > 0 {
+		played += sf_chunk(h, at + played, remain)
+	}
+	return played
+}
+
+@(private)
+sf_finish :: proc(h: ^tsf.TSF, cursor: int) -> []f32 {
+	tsf.note_off_all(h)
+	c2 := cursor + sf_chunk(h, cursor, SF_TAIL)
 	// Full rig: clean DI -> neural amp -> cabinet IR (each is a no-op if inactive).
-	pcm := apply_nam(g_sf_render[:cursor])
-	return apply_ir(pcm)
+	return apply_ir(apply_nam(g_sf_render[:c2]))
+}
+
+// sf_render plays each group for the same `dur` (used by the drill: steady
+// cadence + target). Returns the finished (amped, cab'd) PCM.
+sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
+	h, preset := sf_source()
+	cursor := 0
+	for g in groups {
+		cursor += sf_group(h, preset, g, dur, cursor)
+	}
+	return sf_finish(h, cursor)
+}
+
+// sf_render_seq plays a rhythm — events with individual hold times (and rests).
+sf_render_seq :: proc(events: []Note_Event) -> []f32 {
+	h, preset := sf_source()
+	cursor := 0
+	for ev in events {
+		cursor += sf_group(h, preset, ev.notes, ev.hold, cursor)
+	}
+	return sf_finish(h, cursor)
 }
 
 // sf_play_cadence renders the I-IV-V-I cadence and schedules it at `at`.

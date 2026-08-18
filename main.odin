@@ -86,20 +86,39 @@ riff :: proc() {
 		fmt.printfln("tone: %s / %s -> cab %s", g_sf.label, sf_preset_name(), ir_status())
 	}
 
-	// Smoke on the Water main phrase, as power chords (root + fifth).
-	roots := []int{43, 46, 48, 43, 46, 49, 48, 43, 46, 48, 46, 43}
-	chords := make([][2]int, len(roots))
-	groups := make([][]int, len(roots))
-	defer delete(chords)
-	defer delete(groups)
-	for r, i in roots {
-		chords[i] = {r, r + 7}
-		groups[i] = chords[i][:]
+	// Smoke on the Water main riff — Blackmore played it in parallel FOURTHS
+	// (root + perfect fourth), with a syncopated rhythm: two short pickup notes
+	// then a held landing note, a rest, repeat. Roots in G (G2=43).
+	SR :: clock.SAMPLE_RATE
+	E :: SR * 22 / 100 // ~0.22 s pickup note
+	H :: SR * 70 / 100 // ~0.70 s held landing note
+	R :: SR * 18 / 100 // ~0.18 s rest between phrases
+	Beat :: struct {
+		root: int,
+		hold: int,
+		rest: bool,
 	}
-	dur := int(clock.SAMPLE_RATE / 5) // 0.2 s per chord
+	beats := []Beat {
+		{43, E, false}, {46, E, false}, {48, H, false}, {0, R, true}, // G  Bb  C..
+		{43, E, false}, {46, E, false}, {49, E, false}, {48, H, false}, {0, R, true}, // G Bb Db C..
+		{43, E, false}, {46, E, false}, {48, H, false}, {0, R, true}, // G  Bb  C..
+		{46, E, false}, {43, H, false}, // Bb  G..
+	}
+	events := make([]Note_Event, len(beats))
+	dyads := make([][2]int, len(beats))
+	defer delete(events)
+	defer delete(dyads)
+	for b, i in beats {
+		if b.rest {
+			events[i] = {notes = {}, hold = b.hold}
+		} else {
+			dyads[i] = {b.root, b.root + 5} // parallel fourth
+			events[i] = {notes = dyads[i][:], hold = b.hold}
+		}
+	}
 
-	fmt.println("rendering riff through the rig...")
-	pcm := sf_render(groups[:], dur)
+	fmt.println("rendering Smoke on the Water through the rig...")
+	pcm := sf_render_seq(events)
 	start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10)
 	audio_play_samples(pcm, start, 0.9)
 
@@ -131,15 +150,6 @@ sfplaycheck :: proc() {
 	defer nam_amp_close()
 	ir_load_default()
 	fmt.printfln("rig: clean DI -> %s -> cab %s", nam_amp_status(), ir_status())
-
-	// Time a full cadence render through the rig (main-thread cost per trial).
-	{
-		key := music.Key{tonic_midi = 45}
-		t0 := time.tick_now()
-		sf_play_cadence(key, audio_clock_now() + 100000, int(clock.SAMPLE_RATE * 2 / 5))
-		dt := time.tick_since(t0)
-		fmt.printfln("cadence render through rig: %.1f ms", time.duration_milliseconds(dt))
-	}
 
 	for {
 		_, more := audio_poll()
