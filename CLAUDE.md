@@ -85,11 +85,16 @@ Fallbacks: no `.sf2` → Karplus-Strong synth; no `.nam` → the sampled-amp SF2
 path; the `amp` tanh overdrive is used only when neither NAM nor a font applies.
 Detection always reads the dry signal.
 
-**Perf note:** NAM inference is CPU-heavy; a cadence renders in ~2.6 s on a
-low-power laptop (sub-second on a fast desktop). Currently rendered
-synchronously per trial — a background render thread is the planned fix to hide
-it. `nam_shim.cpp` is combined into one object (`ld -r`) so the architecture
-parsers' static registrations aren't dropped by the linker.
+**Perf / async render:** NAM inference is CPU-heavy (~2.6 s per cadence on a
+low-power laptop, sub-second on a fast desktop). Rig audio is rendered on a
+**background worker** (`render.odin`): the drill publishes a clip (Note_Events),
+the worker renders it (TSF→NAM→cab IR) off-thread, and the main thread schedules
+the finished PCM — so the UI never freezes (it shows "GET READY" during the
+render). New drill phases: `Prep` (trial audio) and `Fb_Prep` (feedback). Tone
+switches are gated on `!render_busy()`. The KS fallback path renders inline (no
+worker) so headless self-tests are unaffected. `nam_shim.cpp` is combined into
+one object (`ld -r`) so the architecture parsers' static registrations aren't
+dropped by the linker.
 
 ## Headless self-tests (no hardware; loopback)
 
@@ -97,7 +102,9 @@ parsers' static registrations aren't dropped by the linker.
 (offset math), `pitchcheck` (onset→window→YIN), `synthcheck` (Karplus-Strong
 voice engine), `drillcheck` (blocking trial loop), `drillsim` (live frame-stepped
 drill → SQLite), `storecheck` (sqlite write, cross-check with `sqlite3` CLI),
-`progresscheck` (progress aggregates from the log).
+`progresscheck` (progress aggregates from the log), `sfplaycheck` (SoundFont
+sample voice), `rigdrillcheck` (async worker: full rig drill over loopback),
+`riff` / `riff-wav` (audition tone / export WAV + timing).
 
 ## Status
 

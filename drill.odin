@@ -64,8 +64,10 @@ play_degree :: proc(target_midi: int, at: u64, dur: u64) -> u64 {
 
 Drill_Phase :: enum {
 	Idle, // between trials; next update starts one
+	Prep, // rig audio rendering on the worker; waiting for it (UI stays live)
 	Listen, // cadence+target scheduled; waiting for / capturing the response
 	Confirm, // onset seen; waiting for its pitch window
+	Fb_Prep, // feedback audio rendering on the worker
 	Feedback, // brief post-answer window
 }
 
@@ -88,9 +90,15 @@ Drill :: struct {
 	last_correct:      bool,
 	last_detected:     int,
 	last_target:       int,
+
+	// fixed storage for the clip submitted to the render worker (cadence 4 +
+	// rest + target = 6 events; feedback reuses slot 0). Must outlive the render.
+	ev_buf:            [8]Note_Event,
+	note_buf:          [8][3]int,
 }
 
 drill_init :: proc(db: ^store.Store, session_id: i64) -> Drill {
+	render_start() // background rig-audio renderer
 	return Drill {
 		phase = .Idle,
 		db = db,
@@ -101,8 +109,33 @@ drill_init :: proc(db: ^store.Store, session_id: i64) -> Drill {
 }
 
 drill_destroy :: proc(d: ^Drill) {
+	render_stop()
 	delete(d.scratch)
 	delete(d.window)
+}
+
+// build_trial_clip fills the drill's event storage with the trial's audio:
+// the I-IV-V-I cadence, a gap, then the target note. Returns the event slice.
+build_trial_clip :: proc(d: ^Drill) -> []Note_Event {
+	chords := music.cadence(d.trial.key)
+	n := 0
+	for ci in 0 ..< 4 {
+		d.note_buf[n] = chords[ci]
+		d.ev_buf[n] = {notes = d.note_buf[n][:], hold = CHORD_DUR}
+		n += 1
+	}
+	d.ev_buf[n] = {notes = {}, hold = GAP} // rest before the target
+	n += 1
+	d.note_buf[n] = {d.trial.target_midi, 0, 0}
+	d.ev_buf[n] = {notes = d.note_buf[n][:1], hold = TARGET_DUR}
+	n += 1
+	return d.ev_buf[:n]
+}
+
+build_note_clip :: proc(d: ^Drill, midi, hold: int) -> []Note_Event {
+	d.note_buf[0] = {midi, 0, 0}
+	d.ev_buf[0] = {notes = d.note_buf[0][:1], hold = hold}
+	return d.ev_buf[:1]
 }
 
 // drill_update advances the state machine by one frame. Non-blocking.
@@ -110,10 +143,28 @@ drill_update :: proc(d: ^Drill) {
 	switch d.phase {
 	case .Idle:
 		d.trial = next_trial(d.db, LOW_TONIC, HIGH_TONIC)
-		start := audio_clock_now() + u64(START_LEAD)
-		d.listen_start = trial_play(d.trial, start)
-		d.listen_timeout_at = d.listen_start + u64(LISTEN_TIMEOUT)
-		d.phase = .Listen
+		if sf_loaded() {
+			// render the trial's rig audio on the worker; schedule it in Prep
+			render_submit(build_trial_clip(d))
+			d.phase = .Prep
+		} else {
+			// KS fallback (headless self-tests): fast enough to render inline
+			start := audio_clock_now() + u64(START_LEAD)
+			d.listen_start = trial_play(d.trial, start)
+			d.listen_timeout_at = d.listen_start + u64(LISTEN_TIMEOUT)
+			d.phase = .Listen
+		}
+
+	case .Prep:
+		if render_ready() {
+			pcm := render_take()
+			at := audio_clock_now() + u64(START_LEAD)
+			audio_play_samples(pcm, at, 0.9)
+			// clip = cadence (4*CHORD_DUR) + rest (GAP) + target (TARGET_DUR)
+			d.listen_start = at + u64(4 * CHORD_DUR + GAP + TARGET_DUR + GAP)
+			d.listen_timeout_at = d.listen_start + u64(LISTEN_TIMEOUT)
+			d.phase = .Listen
+		}
 
 	case .Listen:
 		for {
@@ -135,6 +186,15 @@ drill_update :: proc(d: ^Drill) {
 			drill_record(d, detected)
 		} else if audio_clock_now() > d.onset_pos + u64(PITCH_WINDOW) + u64(clock.SAMPLE_RATE) {
 			drill_record(d, -1) // window never arrived (shouldn't happen)
+		}
+
+	case .Fb_Prep:
+		if render_ready() {
+			pcm := render_take()
+			at := audio_clock_now() + u64(clock.SAMPLE_RATE / 50)
+			audio_play_samples(pcm, at, 0.9)
+			d.feedback_end = at + u64(FEEDBACK_DUR)
+			d.phase = .Feedback
 		}
 
 	case .Feedback:
@@ -184,10 +244,20 @@ drill_record :: proc(d: ^Drill, detected_midi: int) {
 	d.last_detected = detected_midi
 	d.last_target = d.trial.target_midi
 
-	at := audio_clock_now() + u64(clock.SAMPLE_RATE / 50) // +20 ms
-	drill_feedback(correct, d.trial.target_midi, at)
-	d.feedback_end = at + u64(FEEDBACK_DUR)
-	d.phase = .Feedback
+	// Auditory feedback: correct replays the target ("lock in"), wrong plays a
+	// semitone-off "stumble". Rig audio renders on the worker (Fb_Prep waits);
+	// the KS fallback is cheap enough to play inline.
+	if sf_loaded() {
+		fb_midi := correct ? d.trial.target_midi : d.trial.target_midi - 1
+		hold := correct ? int(clock.SAMPLE_RATE / 3) : int(clock.SAMPLE_RATE / 5)
+		render_submit(build_note_clip(d, fb_midi, hold))
+		d.phase = .Fb_Prep
+	} else {
+		at := audio_clock_now() + u64(clock.SAMPLE_RATE / 50)
+		drill_feedback(correct, d.trial.target_midi, at)
+		d.feedback_end = at + u64(FEEDBACK_DUR)
+		d.phase = .Feedback
+	}
 }
 
 // drill_feedback: correct replays the target as a confirming "lock in"; wrong

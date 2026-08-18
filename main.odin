@@ -65,8 +65,67 @@ main :: proc() {
 			riff_wav()
 			return
 		}
+		if arg == "--rigdrillcheck" {
+			rigdrillcheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// rigdrillcheck runs the live drill through the FULL rig + background render
+// worker (Idle->Prep->Listen->Confirm->Fb_Prep->Feedback), injecting scripted
+// responses over loopback — verifying the async render path end to end.
+rigdrillcheck :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	audio_set_loopback(true)
+
+	if !sf_load_default() {
+		fmt.eprintln("SKIP: no soundfont assets")
+		return
+	}
+	di_load("assets/clean.sf2")
+	nam_amp_load_default()
+	ir_load_default()
+	defer sf_close()
+	defer nam_amp_close()
+	fmt.printfln("rig: clean DI -> %s -> cab %s", nam_amp_status(), ir_status())
+
+	path :: "/tmp/gt_rigdrill.db"
+	os.remove(path)
+	db, _ := store.open(path)
+	d := drill_init(&db, 1)
+	defer drill_destroy(&d)
+
+	want := []bool{true, false}
+	last_injected := max(u64)
+	deadline := 0
+	for d.total < len(want) && deadline < 20000 {
+		drill_update(&d)
+		if d.phase == .Listen && d.listen_start != last_injected {
+			resp := d.trial.target_midi + (want[d.total] ? 0 : 1)
+			audio_play_tone(detect.midi_to_freq(resp), d.listen_start, u64(clock.SAMPLE_RATE / 2), 0.7)
+			last_injected = d.listen_start
+		}
+		time.sleep(2 * time.Millisecond)
+		deadline += 1
+	}
+	store.close(&db)
+
+	db2, _ := store.open(path)
+	defer store.close(&db2)
+	defer os.remove(path)
+	n := store.count_trials(&db2)
+	fmt.printfln("logged %d trials; correct=%d/%d", n, d.correct_count, d.total)
+	if n != i64(len(want)) || d.correct_count != 1 {
+		fmt.eprintln("FAIL: rig drill did not judge/log as expected")
+		os.exit(1)
+	}
+	fmt.println("PASS: async rig drill (worker render) works end to end")
 }
 
 // riff plays a short rock riff (Smoke on the Water, power chords) through the
@@ -822,24 +881,15 @@ run_app :: proc() {
 		if store_ok && rl.IsKeyPressed(.P) {
 			show_progress = !show_progress
 		}
-		// F cycles the guitar SoundFont, V its preset (voice).
-		if rl.IsKeyPressed(.F) {
-			sf_next_font()
-		}
-		if rl.IsKeyPressed(.V) {
-			sf_next_preset()
-		}
-		if rl.IsKeyPressed(.B) {
-			ir_next() // cycle cabinet
-		}
-		if rl.IsKeyPressed(.I) {
-			ir_toggle() // cab on/off
-		}
-		if rl.IsKeyPressed(.N) {
-			nam_amp_toggle() // neural amp on/off
-		}
-		if rl.IsKeyPressed(.A) {
-			nam_amp_next() // cycle amp model
+		// Tone switches swap fonts/amps/IRs that the render worker reads, so only
+		// apply them when the worker is idle (between renders).
+		if !render_busy() {
+			if rl.IsKeyPressed(.F) do sf_next_font() // guitar SoundFont
+			if rl.IsKeyPressed(.V) do sf_next_preset() // preset
+			if rl.IsKeyPressed(.B) do ir_next() // cabinet
+			if rl.IsKeyPressed(.I) do ir_toggle() // cab on/off
+			if rl.IsKeyPressed(.N) do nam_amp_toggle() // neural amp on/off
+			if rl.IsKeyPressed(.A) do nam_amp_next() // amp model
 		}
 
 		// draw the 800x480 scene into the offscreen texture
@@ -970,9 +1020,11 @@ drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
 	switch d.phase {
 	case .Idle, .Confirm:
 		phase_label = "READY"
+	case .Prep:
+		phase_label = "GET READY"
 	case .Listen:
 		phase_label = "LISTEN"
-	case .Feedback:
+	case .Fb_Prep, .Feedback:
 		phase_label = d.last_correct ? "NAILED IT" : "NOT QUITE"
 	}
 	lc := d.phase == .Feedback ? (d.last_correct ? UI_GOOD : UI_BAD) : UI_FRAME
