@@ -20,3 +20,11 @@
 
 # scratch
 /tmp/
+
+# neural amp models (third-party; fetch with assets/fetch.sh)
+/assets/*.nam
+# NAM build artifacts + fetched deps (Eigen, namcore) — rebuilt by nam/build.sh
+/nam/libnam.a
+/nam/vendor/
+/tools/namcheck/namcheck
+/tools/sfcheck/sfcheck

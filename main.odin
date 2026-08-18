@@ -57,8 +57,58 @@ main :: proc() {
 			sfplaycheck()
 			return
 		}
+		if arg == "--riff" {
+			riff()
+			return
+		}
 	}
 	run_app()
+}
+
+// riff plays a short rock riff (Smoke on the Water, power chords) through the
+// current rig so the tone can be auditioned directly — no window, no drill.
+riff :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	sf_load_default()
+	di_load("assets/clean.sf2")
+	nam_amp_load_default()
+	ir_load_default()
+	defer sf_close()
+	defer nam_amp_close()
+
+	if nam_amp_active() {
+		fmt.printfln("rig: clean DI -> %s -> cab %s", nam_amp_status(), ir_status())
+	} else {
+		fmt.printfln("tone: %s / %s -> cab %s", g_sf.label, sf_preset_name(), ir_status())
+	}
+
+	// Smoke on the Water main phrase, as power chords (root + fifth).
+	roots := []int{43, 46, 48, 43, 46, 49, 48, 43, 46, 48, 46, 43}
+	chords := make([][2]int, len(roots))
+	groups := make([][]int, len(roots))
+	defer delete(chords)
+	defer delete(groups)
+	for r, i in roots {
+		chords[i] = {r, r + 7}
+		groups[i] = chords[i][:]
+	}
+	dur := int(clock.SAMPLE_RATE / 5) // 0.2 s per chord
+
+	fmt.println("rendering riff through the rig...")
+	pcm := sf_render(groups[:], dur)
+	start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10)
+	audio_play_samples(pcm, start, 0.9)
+
+	// wait for it to finish
+	end := start + u64(len(pcm))
+	for audio_clock_now() < end + u64(clock.SAMPLE_RATE / 4) {
+		time.sleep(20 * time.Millisecond)
+	}
+	fmt.println("done")
 }
 
 // sfplaycheck loads a SoundFont, renders a note, plays it over the loopback, and
@@ -76,8 +126,20 @@ sfplaycheck :: proc() {
 		return
 	}
 	defer sf_close()
+	di_load("assets/clean.sf2")
+	nam_amp_load_default()
+	defer nam_amp_close()
 	ir_load_default()
-	fmt.printfln("loaded %s / %s  ·  cab %s", g_sf.label, sf_preset_name(), ir_status())
+	fmt.printfln("rig: clean DI -> %s -> cab %s", nam_amp_status(), ir_status())
+
+	// Time a full cadence render through the rig (main-thread cost per trial).
+	{
+		key := music.Key{tonic_midi = 45}
+		t0 := time.tick_now()
+		sf_play_cadence(key, audio_clock_now() + 100000, int(clock.SAMPLE_RATE * 2 / 5))
+		dt := time.tick_since(t0)
+		fmt.printfln("cadence render through rig: %.1f ms", time.duration_milliseconds(dt))
+	}
 
 	for {
 		_, more := audio_poll()
@@ -125,8 +187,11 @@ screenshot :: proc() {
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
 	sf_load_default()
+	di_load("assets/clean.sf2")
+	nam_amp_load_default()
 	ir_load_default()
 	defer sf_close()
+	defer nam_amp_close()
 
 	path :: "/tmp/gt_shot.db"
 	os.remove(path)
@@ -650,9 +715,12 @@ run_app :: proc() {
 	// synth if the assets aren't present).
 	if audio_ok {
 		sf_load_default()
-		ir_load_default() // cabinet IR for realistic electric tone
+		di_load("assets/clean.sf2") // clean DI source for the neural amp
+		nam_amp_load_default() // neural amp model (real amp)
+		ir_load_default() // cabinet IR
 	}
 	defer sf_close()
+	defer nam_amp_close()
 
 	db: store.Store
 	store_ok := false
@@ -697,6 +765,12 @@ run_app :: proc() {
 		}
 		if rl.IsKeyPressed(.I) {
 			ir_toggle() // cab on/off
+		}
+		if rl.IsKeyPressed(.N) {
+			nam_amp_toggle() // neural amp on/off
+		}
+		if rl.IsKeyPressed(.A) {
+			nam_amp_next() // cycle amp model
 		}
 
 		// draw the 800x480 scene into the offscreen texture
@@ -880,10 +954,12 @@ drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
 
 	// --- footer ---
 	tone: cstring = "TONE  chip synth (no soundfont)"
-	if sf_loaded() {
+	if nam_amp_active() {
+		tone = fmt.ctprintf("RIG  clean DI -> %s -> cab %s", nam_amp_status(), ir_status())
+	} else if sf_loaded() {
 		tone = fmt.ctprintf("TONE  %s / %s  ·  cab %s", g_sf.label, sf_preset_name(), ir_status())
 	}
-	rl.DrawText(tone, 22, 410, 16, UI_GOLD)
-	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 430, 16, UI_DIM)
-	rl.DrawText("F guitar · V preset · B cab · I cab on/off · C calib · P progress · ESC", 22, 452, 14, {90, 90, 120, 255})
+	rl.DrawText(tone, 22, 408, 16, UI_GOLD)
+	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 428, 14, UI_DIM)
+	rl.DrawText("N amp · A amp-model · B cab · I cab · F/V guitar · C calib · P progress · ESC", 22, 450, 13, {90, 90, 120, 255})
 }

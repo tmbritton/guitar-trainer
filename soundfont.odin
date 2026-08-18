@@ -35,6 +35,7 @@ g_sf_files := [?]Sf_Entry {
 }
 g_sf_index: int
 g_sf: Soundfont
+g_di: ^tsf.TSF // clean-guitar DI source, used as the neural-amp input
 g_sf_render: [SAMPLE_BUF_LEN]f32 // main-thread render scratch
 
 sf_loaded :: proc() -> bool {
@@ -46,6 +47,25 @@ sf_close :: proc() {
 		tsf.close(g_sf.handle)
 		g_sf.handle = nil
 	}
+	if g_di != nil {
+		tsf.close(g_di)
+		g_di = nil
+	}
+}
+
+// di_load opens a clean-guitar SoundFont to use as the neural-amp DI source.
+di_load :: proc(path: string) -> bool {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	d := tsf.load_filename(cpath)
+	if d == nil {
+		return false
+	}
+	tsf.set_output(d, .MONO, clock.SAMPLE_RATE, 0)
+	if g_di != nil {
+		tsf.close(g_di)
+	}
+	g_di = d
+	return true
 }
 
 // sf_load opens a SoundFont file and makes it the active playback voice.
@@ -106,8 +126,14 @@ sf_preset_name :: proc() -> string {
 // sf_render renders a sequence of note groups (each held for `dur` samples, in
 // order) plus a release tail, into the scratch buffer; returns the filled slice.
 sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
+	// With the neural amp active, render from the CLEAN DI font so the amp model
+	// gets a clean input; otherwise render from the (sampled-amp) font.
 	h := g_sf.handle
 	preset := c.int(g_sf.preset)
+	if nam_amp_active() && g_di != nil {
+		h = g_di
+		preset = 0
+	}
 	cursor := 0
 	render :: proc(h: ^tsf.TSF, at: int, n: int) -> int {
 		m := min(n, SAMPLE_BUF_LEN - at)
@@ -126,8 +152,9 @@ sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
 	}
 	tsf.note_off_all(h)
 	cursor += render(h, cursor, SF_TAIL)
-	// Cabinet IR convolution — the big electric-guitar realism step (offline).
-	return apply_ir(g_sf_render[:cursor])
+	// Full rig: clean DI -> neural amp -> cabinet IR (each is a no-op if inactive).
+	pcm := apply_nam(g_sf_render[:cursor])
+	return apply_ir(pcm)
 }
 
 // sf_play_cadence renders the I-IV-V-I cadence and schedules it at `at`.

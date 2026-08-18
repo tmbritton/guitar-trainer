@@ -29,4 +29,13 @@ dlir() { # local url
 dlir cab1.wav "1960a/1960a%20sm57/45oa4x12-sm57-0in-0c.wav" # Marshall 1960A 4x12, SM57
 dlir cab2.wav "Mesa%20OS%204x12%20IR/Mesa_OS_4x12_57_m160.wav" # Mesa 4x12
 dlir cab3.wav "0Miscellaneous/5150%20IC%20V1.wav"            # 5150
+
+# Clean DI SoundFont (neural-amp input) + Neural Amp Modeler amp captures
+# (pelennor2170/NAM_models). Amp-only models — the cab IR provides the speaker.
+dl clean.sf2 "Clean%20Strat.sf2"                             # clean DI source
+nam="https://raw.githubusercontent.com/pelennor2170/NAM_models/main"
+dlnam() { [ -f "$1" ] && { echo "have $1"; return; }; echo "fetching $1 ..."; curl -sL -o "$1" "$nam/$2"; }
+dlnam amp1.nam "Phillipe%20P%20LaneyGH100S-Lo-CrunchGain-ESR0%2C024.nam" # Laney (Iommi!)
+dlnam amp2.nam "Tim%20R%20JCM2000%20Crunch%20805%27d.nam"                # Marshall JCM2000
+dlnam amp3.nam "Sascha%20S%20DirtyShirleyMini_crunch_G6.nam"             # Dirty Shirley
 echo "done."

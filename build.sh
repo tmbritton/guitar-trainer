@@ -19,12 +19,18 @@ if [ ! -f "tsf/libtsf.a" ]; then
 	rm -f tsf/tsf.o
 fi
 
+# NeuralAmpModelerCore (C++); build its static lib once (fetches Eigen + json).
+if [ ! -f "nam/libnam.a" ]; then
+	echo "building nam (neural amp) static lib... (first time: clones Eigen, ~minutes)"
+	bash nam/build.sh
+fi
+
 # raylib links the X11 stack + GL. On this Fedora Atomic (Bluefin) host the dev
 # .so symlinks live under Homebrew, but Homebrew's ld doesn't search its own lib
 # path by default. Point the linker at it and bake an rpath so the binary runs.
-# -lm satisfies TinySoundFont's libm use.
+# -lm satisfies TinySoundFont; -lstdc++ the C++ neural-amp lib (nam/libnam.a).
 BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
-LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB} -lm"
+LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB} -lm -lstdc++"
 
 exec mise exec -- odin build . -out:guitar-trainer \
 	-extra-linker-flags:"${LINK_FLAGS}" "$@"

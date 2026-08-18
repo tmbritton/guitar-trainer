@@ -71,11 +71,25 @@ build.sh) loading a real sampled-guitar `.sf2`, then convolved with a **cabinet
 impulse response** (`conv` pkg; IR loaded via miniaudio's decoder in `ir.odin`)
 — the cab IR is the main electric-guitar realism step. Both are third-party
 binaries, not committed — run `assets/fetch.sh` to download the fonts + IRs.
-In the app: `F` cycles guitar, `V` preset, `B` cabinet, `I` cab on/off. If no
-`.sf2` is present it falls back to the Karplus-Strong synth (so headless tests
-need no assets). The `amp` overdrive is bypassed while a font is active.
-Rendering + convolution happen on the main thread; detection reads the dry
-signal.
+**Full modeled rig (best tone):** a clean-DI SoundFont (`assets/clean.sf2`) →
+**Neural Amp Modeler** (real-amp capture; NeuralAmpModelerCore built to
+`nam/libnam.a` by `nam/build.sh`, which fetches Eigen — `-march=native`, so
+build on the target machine) → cabinet IR. Amp models are `.nam` files in
+`assets/` (Laney/JCM2000/Dirty Shirley), fetched by `assets/fetch.sh`.
+
+Controls: `N` neural amp on/off, `A` amp model, `B` cabinet, `I` cab on/off,
+`F`/`V` guitar/preset (the sampled-amp path when NAM is off). `./guitar-trainer
+--riff` auditions the current tone (renders a riff, plays it — no window).
+
+Fallbacks: no `.sf2` → Karplus-Strong synth; no `.nam` → the sampled-amp SF2
+path; the `amp` tanh overdrive is used only when neither NAM nor a font applies.
+Detection always reads the dry signal.
+
+**Perf note:** NAM inference is CPU-heavy; a cadence renders in ~2.6 s on a
+low-power laptop (sub-second on a fast desktop). Currently rendered
+synchronously per trial — a background render thread is the planned fix to hide
+it. `nam_shim.cpp` is combined into one object (`ld -r`) so the architecture
+parsers' static registrations aren't dropped by the linker.
 
 ## Headless self-tests (no hardware; loopback)
 
