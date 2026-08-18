@@ -87,8 +87,8 @@ ir_status :: proc() -> string {
 // apply_ir convolves `pcm` with the active cab IR (into a scratch buffer, then
 // peak-limited), or returns `pcm` unchanged when no cab is active.
 apply_ir :: proc(pcm: []f32) -> []f32 {
-	if !ir_active() {
-		return pcm
+	if !ir_active() || render_aborting() {
+		return pcm // no cab, or shutting down — skip the (heavy) convolution
 	}
 	n := conv.convolve(pcm, g_ir, g_conv_scratch[:])
 	out := g_conv_scratch[:n]

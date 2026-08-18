@@ -2,7 +2,9 @@ package tsf
 
 // Odin bindings to TinySoundFont (vendored tsf.h, compiled to libtsf.a). A
 // single-file C SoundFont2 synth — used to render real sampled guitar tones for
-// playback. Main-thread only in this app (we pre-render notes to PCM buffers).
+// playback. Called only from the render worker thread while the drill runs (or
+// the main thread in the headless --riff/--sfplaycheck paths, which start no
+// worker) — never concurrently; see render.odin / render_busy().
 
 import "core:c"
 

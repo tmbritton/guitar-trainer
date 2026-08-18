@@ -47,6 +47,12 @@ render_ready :: proc() -> bool {
 	return intrinsics.atomic_load(&g_job_done) != 0
 }
 
+// render_aborting reports that a stop was requested — the heavy DSP loops poll
+// this so an in-flight render bails promptly on shutdown (no multi-second hang).
+render_aborting :: proc() -> bool {
+	return intrinsics.atomic_load(&g_render_stop) != 0
+}
+
 // render_busy reports whether the worker holds/renders a job (used to gate tone
 // switches so they don't race the worker's reads of g_sf / g_nam / g_ir).
 render_busy :: proc() -> bool {

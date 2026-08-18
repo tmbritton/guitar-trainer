@@ -32,5 +32,5 @@ fi
 BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
 LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB} -lm -lstdc++"
 
-exec mise exec -- odin build . -out:guitar-trainer \
+exec mise exec -- odin build . -out:guitar-trainer -o:speed \
 	-extra-linker-flags:"${LINK_FLAGS}" "$@"

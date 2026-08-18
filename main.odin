@@ -69,8 +69,49 @@ main :: proc() {
 			rigdrillcheck()
 			return
 		}
+		if arg == "--abortcheck" {
+			abortcheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// abortcheck verifies that render_stop() aborts an in-flight (slow) NAM render
+// promptly instead of waiting the whole ~seconds out (the shutdown-hang fix).
+abortcheck :: proc() {
+	if !sf_load_default() {
+		fmt.eprintln("SKIP: no soundfont assets")
+		return
+	}
+	di_load("assets/clean.sf2")
+	nam_amp_load_default()
+	ir_load_default()
+	defer sf_close()
+	defer nam_amp_close()
+
+	// a full cadence clip (the expensive case)
+	chords := music.cadence(music.Key{tonic_midi = 45})
+	note_store: [4][3]int
+	ev: [4]Note_Event
+	for ci in 0 ..< 4 {
+		note_store[ci] = chords[ci]
+		ev[ci] = {notes = note_store[ci][:], hold = CHORD_DUR}
+	}
+
+	render_start()
+	render_submit(ev[:])
+	time.sleep(250 * time.Millisecond) // let it get well into the NAM inference
+
+	t0 := time.tick_now()
+	render_stop() // requests abort + joins
+	dt := time.duration_milliseconds(time.tick_since(t0))
+	fmt.printfln("render_stop() during an in-flight render took %.0f ms", dt)
+	if dt > 1000 {
+		fmt.eprintln("FAIL: shutdown waited out the whole render (abort not working)")
+		os.exit(1)
+	}
+	fmt.println("PASS: in-flight render aborts promptly on stop")
 }
 
 // rigdrillcheck runs the live drill through the FULL rig + background render

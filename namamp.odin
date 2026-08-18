@@ -2,7 +2,9 @@ package main
 
 // Neural amp stage: a clean DI guitar signal (from a clean SoundFont) run
 // through a Neural Amp Modeler capture of a real amp, then into the cab IR.
-// This is the "full modeled rig" path. Main-thread only, in the render step.
+// This is the "full modeled rig" path. Runs on the render worker thread (or the
+// main thread in the headless audition paths) — never both at once; the
+// inference loop polls render_aborting() so shutdown doesn't wait it out.
 
 import "core:c"
 import "core:strings"
@@ -93,11 +95,14 @@ apply_nam :: proc(pcm: []f32) -> []f32 {
 	n := len(pcm)
 	off := 0
 	for off < n {
+		if render_aborting() {
+			break // shutdown requested — stop the (expensive) inference early
+		}
 		m := min(NAM_BLOCK, n - off)
 		nam.nam_process(g_nam_handle, raw_data(pcm[off:]), raw_data(g_nam_scratch[off:]), c.int(m))
 		off += m
 	}
-	out := g_nam_scratch[:n]
+	out := g_nam_scratch[:off]
 	peak: f32 = 0
 	for s in out {
 		a := s < 0 ? -s : s

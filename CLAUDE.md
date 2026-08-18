@@ -13,7 +13,8 @@ Per-story implementation plans live in `docs/epic-{N}/story-{M}.md`.
 
 ## Build & run
 
-- `./build.sh` → `./guitar-trainer` (release). `./build.sh -debug` arms the
+- `./build.sh` → `./guitar-trainer`, built `-o:speed` (needed — the DSP, esp.
+  IR convolution, is ~10x slower unoptimized). `./build.sh -debug` arms the
   audio-thread allocation guard (panics on any alloc in the callback).
 - raylib links the X11 stack + GL. On this host (Bluefin/Fedora Atomic) the dev
   `.so`s live under Homebrew; `build.sh` passes
