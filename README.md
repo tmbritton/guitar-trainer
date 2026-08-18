@@ -84,11 +84,58 @@ Your trial history is written to `trials.db` in the working directory.
 
 ## Hardware
 
-For real use the spec calls for a **class-compliant USB interface with a Hi-Z
-instrument input** (e.g. Focusrite Scarlett Solo 4th gen or MOTU M2). Detection
-runs on the dry DI signal; distortion/amp-sim is a separate, downstream path.
-Onboard audio is fine for development and for hearing the app, but the low-latency
-pick-attack timing needs the interface.
+Onboard audio is fine for development and for hearing the app, but real use wants
+a proper **USB audio interface**. Detection runs on the dry DI signal, and the
+pick-attack timing is latency-sensitive, so the interface matters.
+
+**What this tool needs**
+
+- A **Hi-Z instrument input** (≥ 1 MΩ) — plug your guitar straight in. A passive
+  magnetic pickup into a line input sounds thin and detects worse.
+- **Class-compliant (USB Audio Class 2.0)** — modern interfaces are plug-and-play
+  on Linux/PipeWire with no proprietary drivers.
+- **Low round-trip latency** — the app targets < 10 ms; better converters/drivers
+  help.
+
+**What "record guitar *and* mic" adds**
+
+- **Two inputs**, at least one **Hi-Z instrument** and one **XLR mic with 48 V
+  phantom power**, so you can capture a mic and a DI guitar at the same time.
+  Interfaces with two **combo XLR/TRS** jacks are the most flexible (each can be
+  a mic *or* an instrument).
+
+### Recommended interfaces (all under $250, 2-input, class-compliant on Linux)
+
+Prices are approximate USD (2026) — check current listings.
+
+| Tier | Interface | ~Price | Inputs | Notes |
+|------|-----------|-------:|--------|-------|
+| Budget | **Behringer UMC202HD** | ~$90 | 2× combo (MIDAS pres) | Cheapest solid option; class-compliant. Shared phantom across channels. |
+| Budget+ | **Audient EVO 4** | ~$130 | 2× combo | Great preamps/converters for the price; Smartgain. Very popular, class-compliant. |
+| Entry (1 mic + 1 gtr) | **Focusrite Scarlett Solo (4th gen)** | ~$130 | 1× XLR + 1× Hi-Z | Exactly one mic **and** one guitar at once; the spec's entry pick. |
+| Best value | **Focusrite Scarlett 2i2 (4th gen)** | ~$200 | 2× combo | The default "just works on Linux" 2-in interface; Auto Gain / Clip Safe. |
+| Best for this tool | **MOTU M2** | ~$200 | 2× combo | ESS Sabre converters, class-leading low latency (best for the < 10 ms target), plus **loopback** — handy for recording guitar over backing tracks. |
+
+If you can stretch just past the budget, the **MOTU M4** (~$270) adds two more
+inputs (2 mic + a dedicated Hi-Z) with the same low-latency converters.
+
+**Recommendation:** for this trainer specifically, the **MOTU M2** is the sweet
+spot — lowest latency (which the drill's timing rewards), two combo inputs for
+mic + guitar, and loopback for recording. If you want the cheapest thing that
+still does everything well, the **Audient EVO 4** or **Scarlett Solo 4th gen**.
+
+**Don't buy** (per the design's rationale):
+
+- A **Rocksmith Real Tone cable** — mono, fixed gain, single-purpose (no mic
+  input, so it can't do the record-guitar-and-mic use case).
+- A **hexaphonic pickup** (Cycfi Nu, Roland GK-3, Fishman TriplePlay) — it solves
+  string/fret disambiguation, a problem this app avoids by scoring *sound* rather
+  than fingering.
+
+Sources:
+[MusicRadar](https://www.musicradar.com/news/best-budget-audio-interfaces) ·
+[Linuxano: interfaces for Linux](https://linuxano.com/best-usb-audio-interfaces-for-linux/) ·
+[ToneStakr: interfaces for guitar](https://tonestakr.com/guides/best-audio-interfaces-guitar/)
 
 ## Development
 
