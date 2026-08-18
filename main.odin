@@ -76,7 +76,8 @@ sfplaycheck :: proc() {
 		return
 	}
 	defer sf_close()
-	fmt.printfln("loaded %s / %s", g_sf.label, sf_preset_name())
+	ir_load_default()
+	fmt.printfln("loaded %s / %s  ·  cab %s", g_sf.label, sf_preset_name(), ir_status())
 
 	for {
 		_, more := audio_poll()
@@ -124,6 +125,7 @@ screenshot :: proc() {
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
 	sf_load_default()
+	ir_load_default()
 	defer sf_close()
 
 	path :: "/tmp/gt_shot.db"
@@ -648,6 +650,7 @@ run_app :: proc() {
 	// synth if the assets aren't present).
 	if audio_ok {
 		sf_load_default()
+		ir_load_default() // cabinet IR for realistic electric tone
 	}
 	defer sf_close()
 
@@ -688,6 +691,12 @@ run_app :: proc() {
 		}
 		if rl.IsKeyPressed(.V) {
 			sf_next_preset()
+		}
+		if rl.IsKeyPressed(.B) {
+			ir_next() // cycle cabinet
+		}
+		if rl.IsKeyPressed(.I) {
+			ir_toggle() // cab on/off
 		}
 
 		// draw the 800x480 scene into the offscreen texture
@@ -870,8 +879,11 @@ drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
 	ui_meter(90, 384, 482, 16, clamp(audio_input_level() * 4, 0, 1))
 
 	// --- footer ---
-	tone := sf_loaded() ? fmt.ctprintf("TONE  %s / %s", g_sf.label, sf_preset_name()) : cstring("TONE  chip synth (no soundfont)")
+	tone: cstring = "TONE  chip synth (no soundfont)"
+	if sf_loaded() {
+		tone = fmt.ctprintf("TONE  %s / %s  ·  cab %s", g_sf.label, sf_preset_name(), ir_status())
+	}
 	rl.DrawText(tone, 22, 410, 16, UI_GOLD)
 	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 430, 16, UI_DIM)
-	rl.DrawText("F guitar  ·  V preset  ·  C calibrate  ·  P progress  ·  ESC", 22, 452, 16, {90, 90, 120, 255})
+	rl.DrawText("F guitar · V preset · B cab · I cab on/off · C calib · P progress · ESC", 22, 452, 14, {90, 90, 120, 255})
 }

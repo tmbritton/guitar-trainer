@@ -6,9 +6,11 @@
 *.o
 *.obj
 
-# soundfonts — third-party binaries; fetch with assets/fetch.sh
+# soundfonts + cabinet IRs — third-party binaries; fetch with assets/fetch.sh
 /assets/*.sf2
 /assets/*.SF2
+/assets/*.wav
+/assets/*.WAV
 
 # trial log (local data)
 /trials.db

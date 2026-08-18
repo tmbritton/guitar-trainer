@@ -126,7 +126,8 @@ sf_render :: proc(groups: [][]int, dur: int) -> []f32 {
 	}
 	tsf.note_off_all(h)
 	cursor += render(h, cursor, SF_TAIL)
-	return g_sf_render[:cursor]
+	// Cabinet IR convolution — the big electric-guitar realism step (offline).
+	return apply_ir(g_sf_render[:cursor])
 }
 
 // sf_play_cadence renders the I-IV-V-I cadence and schedules it at `at`.

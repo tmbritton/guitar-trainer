@@ -67,13 +67,15 @@ tools/audioprobe standalone device enumerator
 ## Guitar tone (SoundFont)
 
 Playback uses **TinySoundFont** (`tsf/tsf.h`, compiled to `tsf/libtsf.a` by
-build.sh) loading a real sampled-guitar `.sf2`. The fonts are third-party
-binaries, not committed — run `assets/fetch.sh` to download them. In the app:
-`F` cycles guitar, `V` cycles preset. If no `.sf2` is present it falls back to
-the built-in Karplus-Strong synth (so headless tests need no assets). The
-amp-sim (`amp` pkg) is bypassed while a font is active (the samples are already
-amped). Notes are rendered on the main thread and played via the callback's
-sample voices; detection still reads the dry signal.
+build.sh) loading a real sampled-guitar `.sf2`, then convolved with a **cabinet
+impulse response** (`conv` pkg; IR loaded via miniaudio's decoder in `ir.odin`)
+— the cab IR is the main electric-guitar realism step. Both are third-party
+binaries, not committed — run `assets/fetch.sh` to download the fonts + IRs.
+In the app: `F` cycles guitar, `V` preset, `B` cabinet, `I` cab on/off. If no
+`.sf2` is present it falls back to the Karplus-Strong synth (so headless tests
+need no assets). The `amp` overdrive is bypassed while a font is active.
+Rendering + convolution happen on the main thread; detection reads the dry
+signal.
 
 ## Headless self-tests (no hardware; loopback)
 
