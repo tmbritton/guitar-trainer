@@ -26,24 +26,31 @@ START_LEAD :: clock.SAMPLE_RATE / 10 + 37 // small, deliberately non-hop-aligned
 // sample `at`, each lasting `chord_dur` samples. Returns the sample at which the
 // cadence ends (where a target tone can follow).
 play_cadence :: proc(key: music.Key, at: u64, chord_dur: u64) -> u64 {
-	chords := music.cadence(key)
-	t := at
-	for chord in chords {
-		for note in chord {
-			freq := detect.midi_to_freq(note)
-			// slightly detached: 90% sounding, 10% gap, so chords are distinct
-			audio_play_tone(freq, t, chord_dur * 9 / 10, 0.25)
+	if sf_loaded() {
+		sf_play_cadence(key, at, int(chord_dur))
+	} else {
+		chords := music.cadence(key)
+		t := at
+		for chord in chords {
+			for note in chord {
+				freq := detect.midi_to_freq(note)
+				// slightly detached: 90% sounding, 10% gap, so chords are distinct
+				audio_play_tone(freq, t, chord_dur * 9 / 10, 0.25)
+			}
+			t += chord_dur
 		}
-		t += chord_dur
 	}
-	return t
+	return at + 4 * chord_dur
 }
 
 // play_degree schedules a single target tone (the scale degree the user must
 // find) starting at `at` for `dur` samples. Returns the sample it ends.
 play_degree :: proc(target_midi: int, at: u64, dur: u64) -> u64 {
-	freq := detect.midi_to_freq(target_midi)
-	audio_play_tone(freq, at, dur, 0.6)
+	if sf_loaded() {
+		sf_play_note(target_midi, at, int(dur), 0.9)
+	} else {
+		audio_play_tone(detect.midi_to_freq(target_midi), at, dur, 0.6)
+	}
 	return at + dur
 }
 
@@ -186,7 +193,13 @@ drill_record :: proc(d: ^Drill, detected_midi: int) {
 // drill_feedback: correct replays the target as a confirming "lock in"; wrong
 // plays a brief dissonant minor-second beat — a stumble, not a red X.
 drill_feedback :: proc(correct: bool, target_midi: int, at: u64) {
-	if correct {
+	if sf_loaded() {
+		if correct {
+			sf_play_note(target_midi, at, int(clock.SAMPLE_RATE / 3), 0.9) // confirm the note
+		} else {
+			sf_play_note(target_midi - 1, at, int(clock.SAMPLE_RATE / 5), 0.7) // a semitone-off "stumble"
+		}
+	} else if correct {
 		audio_play_tone(detect.midi_to_freq(target_midi), at, u64(clock.SAMPLE_RATE / 3), 0.4)
 	} else {
 		audio_play_tone(220, at, u64(clock.SAMPLE_RATE / 5), 0.3)

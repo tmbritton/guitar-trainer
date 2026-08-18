@@ -53,8 +53,55 @@ main :: proc() {
 			screenshot()
 			return
 		}
+		if arg == "--sfplaycheck" {
+			sfplaycheck()
+			return
+		}
 	}
 	run_app()
+}
+
+// sfplaycheck loads a SoundFont, renders a note, plays it over the loopback, and
+// confirms audio actually comes out (an onset fires and the level rises).
+sfplaycheck :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	audio_set_loopback(true)
+
+	if !sf_load_default() {
+		fmt.eprintln("SKIP: no soundfont assets present (assets/*.sf2)")
+		return
+	}
+	defer sf_close()
+	fmt.printfln("loaded %s / %s", g_sf.label, sf_preset_name())
+
+	for {
+		_, more := audio_poll()
+		if !more do break
+	}
+	start := audio_clock_now() + u64(clock.SAMPLE_RATE / 10)
+	sf_play_note(57, start, clock.SAMPLE_RATE / 2, 0.9) // A3
+
+	got_onset := false
+	peak: f32
+	for d := 0; d < 1500 && !got_onset; d += 1 {
+		for {
+			_, more := audio_poll()
+			if !more do break
+			got_onset = true
+		}
+		peak = max(peak, audio_input_level())
+		time.sleep(time.Millisecond)
+	}
+	fmt.printfln("onset=%v  peak_level=%.4f", got_onset, peak)
+	if !got_onset || peak < 0.001 {
+		fmt.eprintln("FAIL: soundfont note produced no audible output")
+		os.exit(1)
+	}
+	fmt.println("PASS: soundfont note plays through the sample voices")
 }
 
 // screenshot renders the drill screen and the progress panel (with some seeded
@@ -76,6 +123,8 @@ screenshot :: proc() {
 
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
+	sf_load_default()
+	defer sf_close()
 
 	path :: "/tmp/gt_shot.db"
 	os.remove(path)
@@ -595,6 +644,13 @@ run_app :: proc() {
 	audio_ok := audio_init()
 	defer if audio_ok do audio_shutdown()
 
+	// Load a real sampled-guitar SoundFont for playback (falls back to the KS
+	// synth if the assets aren't present).
+	if audio_ok {
+		sf_load_default()
+	}
+	defer sf_close()
+
 	db: store.Store
 	store_ok := false
 	if audio_ok {
@@ -625,6 +681,13 @@ run_app :: proc() {
 		}
 		if store_ok && rl.IsKeyPressed(.P) {
 			show_progress = !show_progress
+		}
+		// F cycles the guitar SoundFont, V its preset (voice).
+		if rl.IsKeyPressed(.F) {
+			sf_next_font()
+		}
+		if rl.IsKeyPressed(.V) {
+			sf_next_preset()
 		}
 
 		// draw the 800x480 scene into the offscreen texture
@@ -807,6 +870,8 @@ drill_draw :: proc(d: ^Drill, audio_ok, store_ok: bool, calib_status: string) {
 	ui_meter(90, 384, 482, 16, clamp(audio_input_level() * 4, 0, 1))
 
 	// --- footer ---
-	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 424, 16, UI_DIM)
-	rl.DrawText("C calibrate  ·  P progress  ·  ESC quit", 22, 452, 16, {90, 90, 120, 255})
+	tone := sf_loaded() ? fmt.ctprintf("TONE  %s / %s", g_sf.label, sf_preset_name()) : cstring("TONE  chip synth (no soundfont)")
+	rl.DrawText(tone, 22, 410, 16, UI_GOLD)
+	rl.DrawText(fmt.ctprintf("calib: %s", calib_status), 22, 430, 16, UI_DIM)
+	rl.DrawText("F guitar  ·  V preset  ·  C calibrate  ·  P progress  ·  ESC", 22, 452, 16, {90, 90, 120, 255})
 }

@@ -61,6 +61,23 @@ Voice :: struct {
 g_voices: [MAX_VOICES]Voice
 g_ks_rng: u32 = 0x1234_5678 // xorshift state; audio thread only
 g_amp: amp.Amp // downstream, playback-only overdrive (never touches detection)
+g_amp_enabled: u32 = 1 // atomic; disabled when a (pre-distorted) soundfont is in use
+
+// Sample-playback voices: PCM rendered on the main thread (e.g. by the
+// SoundFont synth) and mixed here. Fixed buffers, no allocation in the callback.
+SAMPLE_VOICES :: 6
+SAMPLE_BUF_LEN :: 160000 // ~3.3 s at 48 kHz (a whole cadence + release tail)
+
+Sample_Voice :: struct {
+	len:    int,
+	start:  u64,
+	pos:    int,
+	gain:   f32,
+	active: u32, // atomic 0/1
+	buf:    [SAMPLE_BUF_LEN]f32,
+}
+
+g_svoices: [SAMPLE_VOICES]Sample_Voice
 
 @(private = "file")
 ks_noise :: proc() -> f32 {
@@ -163,6 +180,57 @@ audio_play_tone :: proc(freq: f32, start, dur: u64, amp: f32) -> bool {
 		return true
 	}
 	return false
+}
+
+// audio_play_samples schedules a PCM buffer to play starting at absolute sample
+// `start`. The PCM is copied into a fixed voice buffer (no shared lifetime).
+// Returns false if the pool is full. Called from the main thread.
+audio_play_samples :: proc(pcm: []f32, start: u64, gain: f32) -> bool {
+	for i in 0 ..< SAMPLE_VOICES {
+		v := &g_svoices[i]
+		if intrinsics.atomic_load(&v.active) != 0 {
+			continue
+		}
+		n := min(len(pcm), SAMPLE_BUF_LEN)
+		copy(v.buf[:n], pcm[:n])
+		v.len = n
+		v.start = start
+		v.pos = 0
+		v.gain = gain
+		intrinsics.atomic_store(&v.active, 1) // release
+		return true
+	}
+	return false
+}
+
+audio_set_amp_enabled :: proc(on: bool) {
+	intrinsics.atomic_store(&g_amp_enabled, on ? 1 : 0)
+}
+
+// mix_samples mixes active sample-playback voices into `out`.
+@(private = "file")
+mix_samples :: proc(out: []f32, start: u64) {
+	n := len(out)
+	for i in 0 ..< SAMPLE_VOICES {
+		v := &g_svoices[i]
+		if intrinsics.atomic_load(&v.active) == 0 {
+			continue
+		}
+		for j in 0 ..< n {
+			t := start + u64(j)
+			if t < v.start {
+				continue
+			}
+			if v.pos >= v.len {
+				break
+			}
+			out[j] += v.buf[v.pos] * v.gain
+			v.pos += 1
+		}
+		if v.pos >= v.len {
+			intrinsics.atomic_store(&v.active, 0)
+		}
+	}
 }
 
 // mix_voices adds all active voices into `out` for the block [start, start+n).
@@ -290,8 +358,9 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 		intrinsics.atomic_store(&g_click_at, CLICK_DISARMED) // one-shot
 	}
 
-	// Mix any scheduled note voices (cadence, target tone, backing) into out.
+	// Mix scheduled synth voices (KS) and sample voices (SoundFont) into out.
 	mix_voices(out, start)
+	mix_samples(out, start)
 
 	// Onset detection reads the mic, or (loopback) the output we just wrote —
 	// the latter lets calibration/pitch self-tests run with no hardware.
@@ -313,6 +382,9 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 	intrinsics.atomic_store(&g_input_rms_bits, transmute(u32)detect.rms(src))
 
 	// Amp-sim is downstream of detection (spec §9.3): overdrive the *playback*
-	// only, after the dry signal has been captured for onset/pitch/history.
-	amp.amp_block(&g_amp, out)
+	// only, after the dry signal has been captured. Bypassed when a SoundFont
+	// supplies the (already amped) guitar tone.
+	if intrinsics.atomic_load(&g_amp_enabled) != 0 {
+		amp.amp_block(&g_amp, out)
+	}
 }

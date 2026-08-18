@@ -1,8 +1,14 @@
 # build artifacts
 /guitar-trainer
 /tools/audioprobe/audioprobe
+/tools/sfcheck/sfcheck
+/tsf/libtsf.a
 *.o
 *.obj
+
+# soundfonts — third-party binaries; fetch with assets/fetch.sh
+/assets/*.sf2
+/assets/*.SF2
 
 # trial log (local data)
 /trials.db

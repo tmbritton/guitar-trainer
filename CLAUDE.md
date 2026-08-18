@@ -64,6 +64,17 @@ store/           SQLite trial log (hand-written bindings) (unit-tested)
 tools/audioprobe standalone device enumerator
 ```
 
+## Guitar tone (SoundFont)
+
+Playback uses **TinySoundFont** (`tsf/tsf.h`, compiled to `tsf/libtsf.a` by
+build.sh) loading a real sampled-guitar `.sf2`. The fonts are third-party
+binaries, not committed — run `assets/fetch.sh` to download them. In the app:
+`F` cycles guitar, `V` cycles preset. If no `.sf2` is present it falls back to
+the built-in Karplus-Strong synth (so headless tests need no assets). The
+amp-sim (`amp` pkg) is bypassed while a font is active (the samples are already
+amped). Notes are rendered on the main thread and played via the callback's
+sample voices; detection still reads the dry signal.
+
 ## Headless self-tests (no hardware; loopback)
 
 `./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
