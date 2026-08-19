@@ -258,6 +258,12 @@ audio_init :: proc() -> bool {
 	// if it fails, device_open falls back to the system default (nil context).
 	audiodev_init_context()
 	audio_resolve_selection()
+	if device_open() do return true
+
+	// The resolved (saved/auto-detected) device wouldn't open — fall back to the
+	// system default so a stale audio.txt can't leave the app with no audio (and
+	// the in-app device picker stays reachable).
+	g_sel_capture, g_sel_playback = -1, -1
 	return device_open()
 }
 

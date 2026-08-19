@@ -108,16 +108,31 @@ name_looks_like_guitar :: proc(name: string) -> bool {
 }
 
 // audio_reinit rebinds the duplex device to the given capture/playback indices
-// (-1 = default) and persists the choice by name. Main-thread only; call it only
-// when no producer/drill is running (from Settings).
+// (-1 = default). On success it persists the choice and returns true. If the new
+// device won't open (unplugged, held exclusively, an unopenable monitor device),
+// it does NOT persist that selection and RECOVERS a working device — restoring
+// the previous selection, else the system default — so audio never dies and the
+// user isn't stranded. Returns false when the requested switch didn't take.
+// Main-thread only; call it only when no producer/drill is running (from Settings).
 audio_reinit :: proc(cap_idx, pb_idx: int) -> bool {
+	prev_cap, prev_pb := g_sel_capture, g_sel_playback
 	ma.device_stop(&g_device)
 	ma.device_uninit(&g_device)
+
 	g_sel_capture = clamp_sel(cap_idx, g_capture_count)
 	g_sel_playback = clamp_sel(pb_idx, g_playback_count)
-	ok := device_open()
-	audioconf_save(sel_name(g_capture_devs[:g_capture_count], g_sel_capture), sel_name(g_playback_devs[:g_playback_count], g_sel_playback))
-	return ok
+	if device_open() {
+		audioconf_save(sel_name(g_capture_devs[:g_capture_count], g_sel_capture), sel_name(g_playback_devs[:g_playback_count], g_sel_playback))
+		return true
+	}
+
+	// The requested device failed to open: recover to the previous selection,
+	// else the system default, so the device stays live. Don't persist the failure.
+	g_sel_capture, g_sel_playback = prev_cap, prev_pb
+	if device_open() do return false
+	g_sel_capture, g_sel_playback = -1, -1
+	_ = device_open()
+	return false
 }
 
 @(private = "file")
