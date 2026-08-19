@@ -6,11 +6,14 @@ package main
 // audio/store/drill lifecycles. Per-screen HUD drawing lives in drill_view.odin.
 
 import "core:fmt"
+import "core:os"
+import "core:strings"
 import "core:time"
 import rl "vendor:raylib"
 
 import "clock"
 import "menu"
+import "songlib"
 import "store"
 
 run_app :: proc() {
@@ -59,6 +62,17 @@ run_app :: proc() {
 	calib_status := "not calibrated — press C"
 	show_progress := false
 
+	// import / library screen state
+	browser: Browser
+	defer browser_close(&browser)
+	lib: Library_View
+	defer library_view_close(&lib)
+	defer import_cancel() // don't orphan a running separator if the app quits mid-import
+	import_name_buf: [256]u8
+	import_name: string
+	start_dir_buf: [512]u8
+	start_dir := default_music_dir(start_dir_buf[:])
+
 	screen := Screen.Main_Menu
 	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
 	main_menu := Menu_Widget {
@@ -72,8 +86,10 @@ run_app :: proc() {
 		case .Main_Menu:
 			switch menu_input(&main_menu) {
 			case 0:
+				library_view_reload(&lib, LIBRARY_DIR)
 				screen = .Library
 			case 1:
+				browser_open(&browser, start_dir)
 				screen = .Import
 			case 2:
 				screen = .Drill
@@ -115,7 +131,35 @@ run_app :: proc() {
 			}
 			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
 
-		case .Library, .Import:
+		case .Import:
+			if rl.IsKeyPressed(.DOWN) do browser_move(&browser, 1)
+			if rl.IsKeyPressed(.UP) do browser_move(&browser, -1)
+			if rl.IsKeyPressed(.BACKSPACE) do browser_up(&browser)
+			if rl.IsKeyPressed(.ENTER) {
+				if action, path := browser_enter(&browser); action == .Import {
+					import_name = string(import_name_buf[:copy(import_name_buf[:], base_name(path))])
+					out_buf: [512]u8
+					import_start(path, song_out_dir(out_buf[:], path))
+					screen = .Importing
+				}
+			}
+			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
+
+		case .Importing:
+			// leave when the user acknowledges (ESC always; ENTER once finished).
+			_, st := import_progress()
+			done := st == .Done || st == .Error
+			if rl.IsKeyPressed(.ESCAPE) || (done && rl.IsKeyPressed(.ENTER)) {
+				import_cancel() // kill a still-running separator so the join is prompt
+				import_reset()
+				library_view_reload(&lib, LIBRARY_DIR)
+				screen = .Library
+			}
+
+		case .Library:
+			if rl.IsKeyPressed(.DOWN) do library_view_move(&lib, 1)
+			if rl.IsKeyPressed(.UP) do library_view_move(&lib, -1)
+			// ENTER -> open the player (Story 6.3); no-op stub for now.
 			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
 		}
 
@@ -134,9 +178,11 @@ run_app :: proc() {
 		case .Settings:
 			settings_draw(audio_ok, calib_status)
 		case .Library:
-			stub_draw("PLAY A SONG", "coming soon — import a song first")
+			library_view_draw(&lib)
 		case .Import:
-			stub_draw("IMPORT SONG", "coming soon")
+			browser_draw(&browser)
+		case .Importing:
+			importing_draw(import_name)
 		}
 		rl.EndTextureMode()
 
@@ -155,7 +201,10 @@ Screen :: enum {
 	Settings,
 	Library,
 	Import,
+	Importing,
 }
+
+LIBRARY_DIR :: "library"
 
 Menu_Widget :: struct {
 	title: cstring,
@@ -209,10 +258,30 @@ settings_draw :: proc(audio_ok: bool, calib_status: string) {
 	rl.DrawText("ESC  back", 40, 448, 16, {90, 90, 120, 255})
 }
 
-stub_draw :: proc(title, msg: cstring) {
-	ui_text(title, 40, 40, 40, UI_FRAME)
-	ui_text(msg, 40, 160, 22, UI_DIM)
-	rl.DrawText("ESC  back", 40, 448, 16, {90, 90, 120, 255})
+// default_music_dir is where the import browser starts: $HOME/Music if it
+// exists, else $HOME, else the current directory. Written into `buf`.
+default_music_dir :: proc(buf: []u8) -> string {
+	home_buf: [400]u8
+	home := os.get_env(home_buf[:], "HOME")
+	if home == "" do return "."
+	music_buf: [512]u8
+	music := fmt.bprintf(music_buf[:], "%s/Music", home)
+	if os.exists(music) do return string(buf[:copy(buf, music)])
+	return string(buf[:copy(buf, home)])
+}
+
+// base_name returns the final path component (filename) of `path`.
+base_name :: proc(path: string) -> string {
+	if s := strings.last_index_byte(path, '/'); s >= 0 do return path[s + 1:]
+	return path
+}
+
+// song_out_dir is the library folder for an imported file: "library/<slug>".
+// Written into `buf`.
+song_out_dir :: proc(buf: []u8, path: string) -> string {
+	n := copy(buf, LIBRARY_DIR + "/")
+	s := songlib.slug(base_name(path), buf[n:])
+	return string(buf[:n + len(s)])
 }
 
 // blit_fit draws the 800x480 scene texture scaled to fit (sw, sh), centred, with

@@ -15,6 +15,9 @@
 # trial log (local data)
 /trials.db
 
+# imported songs' separated stems (local data; produced by assets/separate.py)
+/library/
+
 # generated screenshots (from --screenshot)
 /gt_*.png
 

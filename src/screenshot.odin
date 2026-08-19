@@ -15,7 +15,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" {
 			which = a
 		}
 	}
@@ -100,10 +100,48 @@ screenshot :: proc() {
 		}
 		rl.TakeScreenshot("gt_fullscreen.png")
 		fmt.println("wrote gt_fullscreen.png")
+	case "import":
+		b: Browser
+		browser_open(&b, "assets") // has some .wav files to list
+		defer browser_close(&b)
+		g_shot_browser = &b
+		shot_frame(proc() {browser_draw(g_shot_browser)}, "gt_import.png")
+		fmt.println("wrote gt_import.png")
+	case "library":
+		root := seed_library() // temp dir with a couple finished songs
+		defer os.remove_all(root)
+		lv: Library_View
+		library_view_reload(&lv, root)
+		defer library_view_close(&lv)
+		g_shot_lib = &lv
+		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library.png")
+		fmt.println("wrote gt_library.png")
 	case:
 		shot_frame(proc() {drill_draw(g_shot_drill, true, true)}, "gt_drill.png")
 		fmt.println("wrote gt_drill.png")
 	}
+}
+
+@(private = "file")
+g_shot_browser: ^Browser
+@(private = "file")
+g_shot_lib: ^Library_View
+
+// seed_library builds a temp library dir with two finished (6-stem) songs so the
+// Library screenshot isn't empty. Returns the root path.
+@(private = "file")
+seed_library :: proc() -> string {
+	root :: "/tmp/gt_shotlib"
+	os.remove_all(root)
+	_ = os.make_directory(root)
+	for song in ([]string{"norwegian-wood", "black-dog"}) {
+		dir := fmt.tprintf("%s/%s", root, song)
+		_ = os.make_directory(dir)
+		for stem in ([]string{"vocals", "drums", "bass", "guitar", "piano", "other"}) {
+			_ = os.write_entire_file(fmt.tprintf("%s/%s.wav", dir, stem), []byte{})
+		}
+	}
+	return root
 }
 
 @(private = "file")

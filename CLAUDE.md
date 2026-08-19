@@ -62,6 +62,9 @@ src/
   app.odin         run_app: the keyboard-driven screen router + menu widget
   drill.odin       drill state machine (Idle→Prep→Listen→Confirm→Fb_Prep→Feedback)
   drill_view.odin  drill HUD + progress-panel rendering (pure view)
+  import.odin      song-import worker (spawn separate.py, read progress pipe)
+  library.odin     library scan (finished songs) + import file-browser listing
+  import_view.odin file browser / importing-progress / library screens (view)
   selftests.odin   headless --*check verification modes
   riff.odin        --riff / --riff-wav tone-audition modes
   screenshot.odin  --screenshot PNG capture
@@ -81,6 +84,7 @@ src/
   game/            trial generation + judging               (unit-tested)
   store/           SQLite trial log (hand-written bindings) (unit-tested)
   menu/            pure keyboard-menu navigation math       (unit-tested)
+  songlib/         import protocol parse + slug + song-dir  (unit-tested)
   amp/             tanh overdrive fallback                  (unit-tested)
   conv/            IR convolution + L2 normalize            (unit-tested)
   tsf/  nam/       third-party C/C++ libs + Odin bindings + build scripts
@@ -119,6 +123,18 @@ worker) so headless self-tests are unaffected. `nam_shim.cpp` is combined into
 one object (`ld -r`) so the architecture parsers' static registrations aren't
 dropped by the linker.
 
+## Song import (stem separation)
+
+The **Import** screen is a keyboard file browser; picking an audio file spawns
+**`assets/separate.py`** (Demucs `htdemucs_6s` → 6 stems: vocals/drums/bass/
+guitar/piano/other) as a subprocess. The separator prints one line per event on
+stdout — `PROGRESS <0..100>` / `DONE <dir>` / `ERROR <msg>` — which `import.odin`
+reads over a pipe on a worker thread (parsed by the pure `songlib` pkg) to drive
+a live progress bar (Importing screen). Finished stems land in `library/<slug>/`
+and show on the **Play a Song** (Library) screen (the player itself is Story
+6.3). Real Demucs needs `pip install demucs` and is slow on CPU — a live/manual
+gate; automated coverage uses `separate.py --stub` (no ML) via `--importcheck`.
+
 ## Headless self-tests (no hardware; loopback)
 
 `./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
@@ -128,7 +144,9 @@ drill → SQLite), `drillabandoncheck` (leaving mid-trial abandons cleanly, no
 stray log / onset), `storecheck` (sqlite write, cross-check with `sqlite3` CLI),
 `progresscheck` (progress aggregates from the log), `sfplaycheck` (SoundFont
 sample voice), `rigdrillcheck` (async worker: full rig drill over loopback),
-`riff` / `riff-wav` (audition tone / export WAV + timing).
+`importcheck` (song-import worker: spawn `assets/separate.py --stub`, read the
+progress pipe, assert 6 stems written), `riff` / `riff-wav` (audition tone /
+export WAV + timing).
 
 ## Status
 

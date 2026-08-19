@@ -13,6 +13,7 @@ import "clock"
 import "detect"
 import "game"
 import "music"
+import "songlib"
 import "store"
 
 // abortcheck verifies that render_stop() aborts an in-flight (slow) NAM render
@@ -317,6 +318,46 @@ drillabandoncheck :: proc() {
 		os.exit(1)
 	}
 	fmt.println("PASS: leaving the drill mid-trial abandons cleanly (no log, ring drained)")
+}
+
+// importcheck drives the real import worker (spawn -> stdout pipe -> parse) end
+// to end against the separator's hermetic --stub mode: no Demucs, no GPU. It
+// asserts progress advanced past 0, the state reached Done, and all 6 stem WAVs
+// were written — verifying the subprocess/pipe integration without ML deps.
+importcheck :: proc() {
+	out :: "/tmp/gt_importcheck"
+	os.remove_all(out) // clean slate so stale stems can't fake a pass
+	defer os.remove_all(out)
+
+	import_start("dummy.wav", out, stub = true)
+
+	saw_progress := false
+	final := Import_State.Idle
+	for deadline := 0; deadline < 5000; deadline += 1 {
+		pct, state := import_progress()
+		if pct > 0 && pct < 1 do saw_progress = true
+		final = state
+		if state == .Done || state == .Error do break
+		time.sleep(time.Millisecond)
+	}
+	import_reset()
+
+	if final != .Done {
+		fmt.eprintfln("FAIL: import ended in %v, expected Done", final)
+		os.exit(1)
+	}
+	if !saw_progress {
+		fmt.eprintln("FAIL: import never reported intermediate progress")
+		os.exit(1)
+	}
+	for stem in songlib.STEMS {
+		path := fmt.tprintf("%s/%s.wav", out, stem)
+		if !os.exists(path) {
+			fmt.eprintfln("FAIL: import did not write %s", path)
+			os.exit(1)
+		}
+	}
+	fmt.println("PASS: song import (stub separator) spawns, reports progress, writes 6 stems")
 }
 
 // storecheck writes a couple of trials to a DB so the result can be
