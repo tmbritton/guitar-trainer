@@ -67,8 +67,8 @@ src/
   import_view.odin file browser / importing-progress / library screens (view)
   stems.odin       decode a song's 6 stems to mono f32 @ 48k (Song_Audio)
   player.odin      song player: producer thread mixes stems -> PCM ring; transport
-  player_view.odin player screen: mixer strip + transport (pure view)
-  songprefs.odin   per-song mixer persistence (library/<song>/mixer.txt)
+  player_view.odin player screen: mixer strip + transport + rig (pure view)
+  songprefs.odin   per-song mixer + rig + speed persistence (library/<song>/mixer.txt)
   selftests.odin   headless --*check verification modes
   riff.odin        --riff / --riff-wav tone-audition modes
   screenshot.odin  --screenshot PNG capture
@@ -91,6 +91,7 @@ src/
   songlib/         import protocol parse + slug + song-dir  (unit-tested)
   pcmring/         SPSC f32 sample ring (player->callback)  (unit-tested)
   mix/             stem-mixer gain math (level/mute/solo)   (unit-tested)
+  ampchain/        realtime monitor amp DSP (oversampled ws + tone + FIR cab) (unit-tested)
   amp/             tanh overdrive fallback                  (unit-tested)
   conv/            IR convolution + L2 normalize            (unit-tested)
   tsf/ nam/ soundtouch/  third-party C/C++ libs + Odin bindings + build scripts
@@ -163,9 +164,24 @@ directly), so the default path is unchanged and latency-free; it only engages
 when speed ≠ 1.0. Speed is clamped to 0.5–1.25 and resets to 1.0 on open
 (per-song speed persistence lands with the rig prefs in 6.5).
 
+**Live monitoring:** the callback runs the **dry interface input** through a
+realtime amp chain (`ampchain` pkg: input drive → **oversampled** waveshaper →
+tone shelves → **streaming-FIR** cab → monitor level) and mixes it into the
+player output, so you hear your guitar in a good tone while playing along. It's a
+light DSP chain (not NAM — that stays the offline drill engine): cheap,
+low-latency, allocation-free (holds under `-debug`). Detection still reads the
+dry signal upstream (spec §9.3) — monitoring never feeds it. The chain is owned
+by the callback; the UI changes params via atomics (`audio_set_monitor_*`), which
+the callback applies; cab IRs are preloaded into fixed buffers so switching is a
+race-free atomic index. **Mono device caveat:** the Rocksmith Real Tone cable is
+input-only, so binding capture (cable) and playback (speakers) to different
+devices needs the audio-device selector — a near-term follow-up (a full interface
+works as default duplex).
+
 Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level,
-`M` mute, `S` solo, `[`/`]` speed, `ESC` back (saves). Live-input monitoring
-through an amp chain is a later story.
+`M` mute, `S` solo, `[`/`]` speed, `G` monitor on/off, `,`/`.` drive, `B` cab,
+`9`/`0` monitor level, `Z`/`X` bass, `C`/`V` treble, `ESC` back (saves mix + rig
++ speed per song).
 
 ## Headless self-tests (no hardware; loopback)
 
@@ -181,8 +197,9 @@ progress pipe, assert 6 stems written), `playercheck` (song player: producer +
 PCM ring + mixer over synthetic stems — mute-all silent, solo isolates energy,
 pause halts the cursor — plus a stem-decode smoke), `speedcheck` (SoundTouch
 time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
-0.5x through the real producer), `riff` / `riff-wav` (audition tone / export
-WAV + timing).
+0.5x through the real producer), `monitorcheck` (live-monitor amp chain: over
+loopback, output rises with monitoring on and returns to baseline at level 0),
+`riff` / `riff-wav` (audition tone / export WAV + timing).
 
 ## Status
 

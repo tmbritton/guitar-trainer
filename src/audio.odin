@@ -8,10 +8,13 @@ import "base:intrinsics"
 import "base:runtime"
 import "core:math"
 import "core:mem"
+import "core:strings"
 import ma "vendor:miniaudio"
 
 import "amp"
+import "ampchain"
 import "clock"
+import "conv"
 import "detect"
 import "pcmring"
 import "ring"
@@ -119,6 +122,103 @@ audio_pcm_reset :: proc() {
 	intrinsics.atomic_store(&g_pcm_ring.tail, 0)
 }
 
+// ---- live input monitoring (realtime amp chain) ----
+//
+// The callback runs the dry interface input through g_monitor (an ampchain.Chain)
+// and mixes it into the output, so you hear your own guitar in a good tone while
+// playing along. The chain is owned by the callback; the UI issues parameter
+// changes via atomics, which the callback applies (monitor_apply_config). Cab IRs
+// are preloaded into fixed buffers so switching is just an atomic index (no race).
+// Detection still reads the dry signal upstream — monitoring never feeds it.
+
+MON_CABS :: 3
+g_monitor: ampchain.Chain
+g_mon_on: u32 // atomic 0/1
+g_mon_drive: u32 // atomic f32 bits
+g_mon_bass: u32 // atomic f32 bits (dB)
+g_mon_treble: u32 // atomic f32 bits (dB)
+g_mon_level: u32 // atomic f32 bits
+g_mon_cab_idx: u32 // atomic: cab to use; >= g_mon_cab_count means "no cab"
+g_output_rms_bits: u32 // atomic f32 bits: post-mix output level (for tests/UI)
+
+// preloaded monitor cab IRs (fixed buffers; the callback reads by index)
+g_mon_cab_data: [MON_CABS][ampchain.CAB_MAX]f32
+g_mon_cab_len: [MON_CABS]int
+g_mon_cab_count: int
+
+// callback-only "last applied" trackers (audio thread touches these, no atomics)
+g_mon_bass_applied: f32 = 1e9
+g_mon_treble_applied: f32 = 1e9
+g_mon_cab_applied: int = -1
+
+audio_monitor_enable :: proc(on: bool) {intrinsics.atomic_store(&g_mon_on, on ? 1 : 0)}
+audio_monitor_on :: proc() -> bool {return intrinsics.atomic_load(&g_mon_on) != 0}
+audio_set_monitor_drive :: proc(d: f32) {intrinsics.atomic_store(&g_mon_drive, transmute(u32)d)}
+audio_set_monitor_level :: proc(l: f32) {intrinsics.atomic_store(&g_mon_level, transmute(u32)l)}
+audio_monitor_drive :: proc() -> f32 {return transmute(f32)intrinsics.atomic_load(&g_mon_drive)}
+audio_monitor_level :: proc() -> f32 {return transmute(f32)intrinsics.atomic_load(&g_mon_level)}
+
+audio_set_monitor_tone :: proc(bass_db, treble_db: f32) {
+	intrinsics.atomic_store(&g_mon_bass, transmute(u32)bass_db)
+	intrinsics.atomic_store(&g_mon_treble, transmute(u32)treble_db)
+}
+audio_monitor_tone :: proc() -> (bass_db, treble_db: f32) {
+	return transmute(f32)intrinsics.atomic_load(&g_mon_bass), transmute(f32)intrinsics.atomic_load(&g_mon_treble)
+}
+
+audio_set_monitor_cab :: proc(idx: int) {intrinsics.atomic_store(&g_mon_cab_idx, u32(idx))}
+audio_monitor_cab :: proc() -> int {return int(intrinsics.atomic_load(&g_mon_cab_idx))}
+audio_monitor_cab_count :: proc() -> int {return g_mon_cab_count}
+
+audio_output_level :: proc() -> f32 {return transmute(f32)intrinsics.atomic_load(&g_output_rms_bits)}
+
+// monitor_apply_config syncs g_monitor from the UI atomics. Callback-only (it
+// owns g_monitor). Cheap params (drive/level) apply every block; tone (biquad
+// recompute) and cab (coeff copy) apply only on change.
+@(private = "file")
+monitor_apply_config :: proc() {
+	ampchain.chain_set_drive(&g_monitor, transmute(f32)intrinsics.atomic_load(&g_mon_drive))
+	ampchain.chain_set_level(&g_monitor, transmute(f32)intrinsics.atomic_load(&g_mon_level))
+
+	b := transmute(f32)intrinsics.atomic_load(&g_mon_bass)
+	tr := transmute(f32)intrinsics.atomic_load(&g_mon_treble)
+	if b != g_mon_bass_applied || tr != g_mon_treble_applied {
+		ampchain.chain_set_tone(&g_monitor, b, tr)
+		g_mon_bass_applied, g_mon_treble_applied = b, tr
+	}
+
+	ci := int(intrinsics.atomic_load(&g_mon_cab_idx))
+	if ci != g_mon_cab_applied {
+		if ci < g_mon_cab_count {
+			ampchain.chain_set_cab(&g_monitor, g_mon_cab_data[ci][:g_mon_cab_len[ci]])
+		} else {
+			ampchain.chain_set_cab(&g_monitor, nil) // no cab -> passthrough
+		}
+		g_mon_cab_applied = ci
+	}
+}
+
+// audio_monitor_load_cabs decodes the cab IR files into the monitor's fixed
+// buffers (main thread, at startup). Truncated to the realtime tap budget.
+audio_monitor_load_cabs :: proc(paths: []string) {
+	g_mon_cab_count = 0
+	for p in paths {
+		if g_mon_cab_count >= MON_CABS do break
+		cpath := strings.clone_to_cstring(p, context.temp_allocator)
+		cfg := ma.decoder_config_init(.f32, 1, 48000)
+		dec: ma.decoder
+		if ma.decoder_init_file(cpath, &cfg, &dec) != .SUCCESS do continue
+		read: u64
+		ma.decoder_read_pcm_frames(&dec, raw_data(g_mon_cab_data[g_mon_cab_count][:]), ampchain.CAB_MAX, &read)
+		ma.decoder_uninit(&dec)
+		if read == 0 do continue
+		ir := g_mon_cab_data[g_mon_cab_count][:int(read)]
+		conv.normalize_l2(ir) // match the offline cab loudness handling
+		g_mon_cab_len[g_mon_cab_count] = int(read)
+		g_mon_cab_count += 1
+	}
+}
+
 @(private = "file")
 ks_noise :: proc() -> f32 {
 	x := g_ks_rng
@@ -138,6 +238,14 @@ audio_version :: proc() -> string {
 audio_init :: proc() -> bool {
 	g_onset = detect.default_onset_detector()
 	g_amp = amp.amp_make()
+
+	// live-monitor amp chain (dry input -> tone -> cab -> monitor level)
+	ampchain.chain_init(&g_monitor)
+	intrinsics.atomic_store(&g_mon_drive, transmute(u32)f32(1))
+	intrinsics.atomic_store(&g_mon_level, transmute(u32)f32(1))
+	intrinsics.atomic_store(&g_mon_bass, transmute(u32)f32(0))
+	intrinsics.atomic_store(&g_mon_treble, transmute(u32)f32(0))
+	intrinsics.atomic_store(&g_mon_cab_idx, 0)
 
 	cfg := ma.device_config_init(.duplex)
 	cfg.sampleRate = clock.SAMPLE_RATE
@@ -428,6 +536,17 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 	// Publish an approximate input level for the UI meter (display only).
 	intrinsics.atomic_store(&g_input_rms_bits, transmute(u32)detect.rms(src))
 
+	// Live monitoring: run the dry input through the amp chain and mix it into the
+	// output at the monitor level, so you hear your own guitar in a good tone while
+	// playing along. Detection already consumed the dry `src` above (spec §9.3), so
+	// monitoring never feeds it. Callback owns g_monitor; it applies UI changes here.
+	if intrinsics.atomic_load(&g_mon_on) != 0 {
+		monitor_apply_config()
+		for i in 0 ..< n {
+			out[i] = clamp(out[i] + ampchain.process(&g_monitor, src[i]), -1, 1)
+		}
+	}
+
 	// Amp-sim is downstream of detection (spec §9.3): overdrive the *playback*
 	// only, after the dry signal has been captured. Bypassed when a SoundFont
 	// supplies the (already amped) guitar tone, and in player mode (the backing
@@ -435,4 +554,7 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 	if intrinsics.atomic_load(&g_player_active) == 0 && intrinsics.atomic_load(&g_amp_enabled) != 0 {
 		amp.amp_block(&g_amp, out)
 	}
+
+	// Publish the post-mix output level (for --monitorcheck / UI).
+	intrinsics.atomic_store(&g_output_rms_bits, transmute(u32)detect.rms(out))
 }

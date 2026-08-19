@@ -43,9 +43,14 @@ run_app :: proc() {
 		di_load("assets/clean.sf2") // clean DI source for the neural amp
 		nam_amp_load_default() // neural amp model (real amp)
 		ir_load_default() // cabinet IR
+		// preload cab IRs for the realtime live-monitor chain (same files)
+		cab_paths: [len(g_ir_files)]string
+		for e, i in g_ir_files do cab_paths[i] = e.path
+		audio_monitor_load_cabs(cab_paths[:])
 	}
 	defer sf_close()
 	defer nam_amp_close()
+	defer if audio_ok do audio_monitor_enable(false)
 
 	db: store.Store
 	store_ok := false
@@ -171,13 +176,14 @@ run_app :: proc() {
 				s := lib.songs[lib.sel]
 				if sa, ok := stems_load(s.dir); ok {
 					player_song = sa
-					if ctl, pok := prefs_load(s.dir); pok {
-						for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
-					}
+					ctl, rig, _ := prefs_load(s.dir)
+					for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
+					apply_rig(rig)
 					player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
 					player_name = string(player_name_buf[:copy(player_name_buf[:], s.name)])
 					player_sel = 0
 					player_open(player_song)
+					player_set_speed(rig.speed) // after open (which resets speed to 1.0)
 					screen = .Player
 				}
 			}
@@ -200,8 +206,20 @@ run_app :: proc() {
 			if rl.IsKeyPressed(.S) do player_toggle_solo(player_sel)
 			if rl.IsKeyPressed(.LEFT_BRACKET) do player_set_speed(player_speed() - 0.05)
 			if rl.IsKeyPressed(.RIGHT_BRACKET) do player_set_speed(player_speed() + 0.05)
+			// live-monitor rig controls
+			if rl.IsKeyPressed(.G) do audio_monitor_enable(!audio_monitor_on())
+			if rl.IsKeyPressed(.NINE) do audio_set_monitor_level(clamp(audio_monitor_level() - 0.05, 0, 1))
+			if rl.IsKeyPressed(.ZERO) do audio_set_monitor_level(clamp(audio_monitor_level() + 0.05, 0, 1))
+			if rl.IsKeyPressed(.COMMA) do audio_set_monitor_drive(clamp(audio_monitor_drive() - 0.25, 0.5, 8))
+			if rl.IsKeyPressed(.PERIOD) do audio_set_monitor_drive(clamp(audio_monitor_drive() + 0.25, 0.5, 8))
+			if rl.IsKeyPressed(.B) do audio_set_monitor_cab((audio_monitor_cab() + 1) % (audio_monitor_cab_count() + 1))
+			if rl.IsKeyPressed(.Z) do adjust_monitor_tone(-1, 0)
+			if rl.IsKeyPressed(.X) do adjust_monitor_tone(1, 0)
+			if rl.IsKeyPressed(.C) do adjust_monitor_tone(0, -1)
+			if rl.IsKeyPressed(.V) do adjust_monitor_tone(0, 1)
 			if rl.IsKeyPressed(.ESCAPE) {
-				prefs_save(player_dir, player_snapshot_ctl()) // remember the mix
+				prefs_save(player_dir, player_snapshot_ctl(), current_rig()) // remember mix + rig + speed
+				audio_monitor_enable(false) // stop monitoring on the menus
 				player_close()
 				stems_free(&player_song)
 				screen = .Library
@@ -322,6 +340,35 @@ default_music_dir :: proc(buf: []u8) -> string {
 base_name :: proc(path: string) -> string {
 	if s := strings.last_index_byte(path, '/'); s >= 0 do return path[s + 1:]
 	return path
+}
+
+// apply_rig pushes a song's saved rig onto the live monitor (audio.odin globals).
+apply_rig :: proc(r: Rig) {
+	audio_monitor_enable(r.monitor)
+	audio_set_monitor_drive(r.drive)
+	audio_set_monitor_tone(r.bass_db, r.treble_db)
+	audio_set_monitor_level(r.level)
+	audio_set_monitor_cab(r.cab)
+}
+
+// current_rig snapshots the live monitor + speed for saving with the song.
+current_rig :: proc() -> Rig {
+	b, tr := audio_monitor_tone()
+	return Rig {
+		monitor = audio_monitor_on(),
+		drive = audio_monitor_drive(),
+		bass_db = b,
+		treble_db = tr,
+		level = audio_monitor_level(),
+		cab = audio_monitor_cab(),
+		speed = player_speed(),
+	}
+}
+
+// adjust_monitor_tone nudges the monitor bass/treble shelves (dB), clamped.
+adjust_monitor_tone :: proc(dbass, dtreble: f32) {
+	b, tr := audio_monitor_tone()
+	audio_set_monitor_tone(clamp(b + dbass, -12, 12), clamp(tr + dtreble, -12, 12))
 }
 
 // song_out_dir is the library folder for an imported file: "library/<slug>".

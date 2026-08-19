@@ -129,6 +129,16 @@ screenshot :: proc() {
 		}
 		sa.ctl[3].level = 0.15 // guitar (index 3) down — the play-along move
 		sa.ctl[1].mute = true // drums muted
+		// load cabs + set a rig so the monitor line is populated
+		cab_paths: [len(g_ir_files)]string
+		for e, i in g_ir_files do cab_paths[i] = e.path
+		audio_monitor_load_cabs(cab_paths[:])
+		audio_monitor_enable(true)
+		audio_set_monitor_drive(3.5)
+		audio_set_monitor_tone(2, 4)
+		audio_set_monitor_level(0.6)
+		audio_set_monitor_cab(0)
+
 		player_open(sa)
 		player_toggle() // pause so nothing sounds during the shot
 		player_set_speed(0.75) // show a slowed-down practice speed

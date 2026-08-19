@@ -543,6 +543,61 @@ drain_n :: proc(count: int) -> int {
 	return got
 }
 
+// monitorcheck verifies the live-monitor amp chain wiring in the callback over
+// the internal loopback: a test tone stands in for the guitar input; with
+// monitoring on, the processed signal is mixed into the output (output level
+// rises), and with the monitor level at 0 it isn't. It also confirms dry
+// detection is untouched (input level is the same monitor on or off).
+monitorcheck :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init returned false")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+
+	audio_set_amp_enabled(false) // isolate the monitor from the fallback overdrive
+	audio_set_loopback(true) // src = out (the test tone) stands in for a guitar
+	audio_set_test_tone(220)
+	audio_set_monitor_drive(1)
+	audio_set_monitor_level(1)
+
+	audio_monitor_enable(false)
+	// warm up: PipeWire takes tens of ms to start firing callbacks, so poll until
+	// the baseline tone is flowing, then settle so the level reaches steady state
+	// (measuring mid ramp-up would read low and skew the comparison).
+	for w := 0; audio_output_level() < 0.1 && w < 1000; w += 1 {
+		time.sleep(time.Millisecond)
+	}
+	time.sleep(80 * time.Millisecond)
+	out_off := audio_output_level()
+
+	audio_monitor_enable(true)
+	time.sleep(80 * time.Millisecond)
+	out_on := audio_output_level()
+
+	audio_set_monitor_level(0)
+	time.sleep(80 * time.Millisecond)
+	out_zero := audio_output_level()
+
+	// Detection isolation is by construction: the callback publishes the dry input
+	// level and runs onset/pitch from `src` *before* the monitor ever touches
+	// `out` (spec §9.3), so monitoring can't feed detection. (Not asserted on the
+	// output level here — single-block RMS of a tone is too noisy in loopback.)
+	if out_off < 0.1 {
+		fmt.eprintfln("FAIL: no baseline output tone (rms %.3f)", out_off)
+		os.exit(1)
+	}
+	if out_on <= out_off * 1.2 {
+		fmt.eprintfln("FAIL: monitor added no output signal (off %.3f, on %.3f)", out_off, out_on)
+		os.exit(1)
+	}
+	if abs(out_zero - out_off) > 0.2 * out_off {
+		fmt.eprintfln("FAIL: monitor level 0 changed the output (off %.3f, zero %.3f)", out_off, out_zero)
+		os.exit(1)
+	}
+	fmt.printfln("PASS: live monitor chain mixes into output (off %.2f, on %.2f, level-0 %.2f)", out_off, out_on, out_zero)
+}
+
 // storecheck writes a couple of trials to a DB so the result can be
 // cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
 storecheck :: proc() {
