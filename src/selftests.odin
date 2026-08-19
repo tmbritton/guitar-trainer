@@ -258,6 +258,67 @@ drillsim :: proc() {
 	os.remove(path)
 }
 
+// drillabandoncheck verifies that leaving the drill mid-trial (ESC to the menu)
+// abandons the trial cleanly: the state machine resets to Idle (so no timeout
+// "miss" is logged for an unplayed trial), no trial is written, and a stray
+// onset captured during the trial is drained so it can't be misattributed to
+// the next trial.
+drillabandoncheck :: proc() {
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init returned false")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+	audio_set_loopback(true)
+
+	path :: "/tmp/gt_abandon.db"
+	os.remove(path)
+	db, ok := store.open(path)
+	if !ok {
+		fmt.eprintln("FAIL: store.open")
+		os.exit(1)
+	}
+	defer store.close(&db)
+	defer os.remove(path)
+
+	d := drill_init(&db, 1)
+	defer drill_destroy(&d)
+
+	// advance to Listen (KS fallback path — no soundfont needed)
+	deadline := 0
+	for d.phase != .Listen && deadline < 5000 {
+		drill_update(&d)
+		time.sleep(time.Millisecond)
+		deadline += 1
+	}
+	if d.phase != .Listen {
+		fmt.eprintln("FAIL: drill never reached Listen")
+		os.exit(1)
+	}
+
+	// a stray onset arrives during the trial (ambient noise / a stray pick tap);
+	// with no drill_update between here and the abandon it sits in the ring.
+	audio_play_tone(220, audio_clock_now() + u64(clock.SAMPLE_RATE / 50), u64(clock.SAMPLE_RATE / 4), 0.6)
+	time.sleep(80 * time.Millisecond) // let its onset land in the ring
+
+	// user hits ESC -> leaves the Drill screen mid-trial
+	drill_abandon(&d)
+
+	if d.phase != .Idle {
+		fmt.eprintfln("FAIL: abandon left phase=%v, expected Idle", d.phase)
+		os.exit(1)
+	}
+	if n := store.count_trials(&db); n != 0 || d.total != 0 {
+		fmt.eprintfln("FAIL: abandon logged a trial (db count=%d, session total=%d)", n, d.total)
+		os.exit(1)
+	}
+	if _, more := audio_poll(); more {
+		fmt.eprintln("FAIL: abandon left a stray onset in the ring (misattribution risk)")
+		os.exit(1)
+	}
+	fmt.println("PASS: leaving the drill mid-trial abandons cleanly (no log, ring drained)")
+}
+
 // storecheck writes a couple of trials to a DB so the result can be
 // cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
 storecheck :: proc() {

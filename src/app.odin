@@ -88,6 +88,9 @@ run_app :: proc() {
 			if audio_ok && store_ok do drill_update(&d)
 			if store_ok && rl.IsKeyPressed(.P) do show_progress = !show_progress
 			if rl.IsKeyPressed(.ESCAPE) {
+				// leaving mid-trial: abandon it (don't log a miss) and drain any
+				// onsets captured while the drill was off-screen.
+				if audio_ok do drill_abandon(&d)
 				screen = .Main_Menu
 				show_progress = false
 			}

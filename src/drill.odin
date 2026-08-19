@@ -142,6 +142,14 @@ build_note_clip :: proc(d: ^Drill, midi, hold: int) -> []Note_Event {
 drill_update :: proc(d: ^Drill) {
 	switch d.phase {
 	case .Idle:
+		// A render left in flight by an abandoned trial (the user hit ESC to the
+		// menu mid-Prep/Fb_Prep) must settle before we start a new one: otherwise
+		// the next render_submit would overwrite g_job_events while the worker is
+		// still reading it. Consume and discard the stale result, then wait.
+		if render_busy() {
+			if render_ready() do render_take()
+			return
+		}
 		d.trial = next_trial(d.db, LOW_TONIC, HIGH_TONIC)
 		if sf_loaded() {
 			// render the trial's rig audio on the worker; schedule it in Prep
@@ -202,6 +210,21 @@ drill_update :: proc(d: ^Drill) {
 			d.phase = .Idle
 		}
 	}
+}
+
+// drill_abandon drops the in-flight trial without logging it — used when the
+// user leaves the Drill screen mid-trial (ESC to the menu). The audio clock and
+// the onset ring keep running while the screen is away, so we drain any onsets
+// captured in the meantime (they must not be misattributed to the next trial)
+// and reset to Idle (so no timeout "miss" fires for a trial that was never
+// played). A render already in flight is consumed/discarded by the Idle guard
+// before the next trial starts.
+drill_abandon :: proc(d: ^Drill) {
+	for {
+		_, more := audio_poll()
+		if !more do break
+	}
+	d.phase = .Idle
 }
 
 // drill_record judges the detected note (detected < 0 means "no confident

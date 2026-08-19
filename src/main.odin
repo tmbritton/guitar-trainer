@@ -34,6 +34,9 @@ main :: proc() {
 		case "--drillsim":
 			drillsim()
 			return
+		case "--drillabandoncheck":
+			drillabandoncheck()
+			return
 		case "--progresscheck":
 			progresscheck()
 			return
