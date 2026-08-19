@@ -103,6 +103,10 @@ run_app :: proc() {
 			if dropped.count > 0 && screen != .Importing && screen != .Player {
 				path := string(dropped.paths[0])
 				if songlib.is_supported_audio(path) {
+					// leaving the Drill mid-trial must abandon it (drain the ring,
+					// reset to Idle) — same as the ESC handler, else a stray onset
+					// gets misattributed to a phantom trial on return.
+					if screen == .Drill && audio_ok do drill_abandon(&d)
 					import_name = string(import_name_buf[:copy(import_name_buf[:], base_name(path))])
 					out_buf: [512]u8
 					import_start(path, song_out_dir(out_buf[:], path))
