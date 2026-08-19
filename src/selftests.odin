@@ -563,21 +563,24 @@ monitorcheck :: proc() {
 
 	audio_monitor_enable(false)
 	// warm up: PipeWire takes tens of ms to start firing callbacks, so poll until
-	// the baseline tone is flowing, then settle so the level reaches steady state
-	// (measuring mid ramp-up would read low and skew the comparison).
+	// the baseline tone is flowing.
 	for w := 0; audio_output_level() < 0.1 && w < 1000; w += 1 {
 		time.sleep(time.Millisecond)
 	}
-	time.sleep(80 * time.Millisecond)
-	out_off := audio_output_level()
+	// Measure each phase as the MAX output level over a window (robust to
+	// single-block RMS phase noise and transient stalls), but settle after each
+	// state change first so the max doesn't grab a lingering block from the
+	// previous state (a level-0 read would otherwise catch the prior loud audio).
+	time.sleep(50 * time.Millisecond)
+	out_off := sample_out_max(120)
 
 	audio_monitor_enable(true)
-	time.sleep(80 * time.Millisecond)
-	out_on := audio_output_level()
+	time.sleep(50 * time.Millisecond)
+	out_on := sample_out_max(120)
 
 	audio_set_monitor_level(0)
 	time.sleep(80 * time.Millisecond)
-	out_zero := audio_output_level()
+	out_zero := sample_out_max(120)
 
 	// Detection isolation is by construction: the callback publishes the dry input
 	// level and runs onset/pitch from `src` *before* the monitor ever touches
@@ -596,6 +599,18 @@ monitorcheck :: proc() {
 		os.exit(1)
 	}
 	fmt.printfln("PASS: live monitor chain mixes into output (off %.2f, on %.2f, level-0 %.2f)", out_off, out_on, out_zero)
+}
+
+// sample_out_max returns the peak output level seen over `ms` milliseconds — a
+// steady-state read that ignores per-block RMS phase dips and transient stalls.
+@(private = "file")
+sample_out_max :: proc(ms: int) -> f32 {
+	m: f32 = 0
+	for w := 0; w < ms; w += 1 {
+		m = max(m, audio_output_level())
+		time.sleep(time.Millisecond)
+	}
+	return m
 }
 
 // storecheck writes a couple of trials to a DB so the result can be

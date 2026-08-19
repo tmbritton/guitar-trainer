@@ -141,10 +141,14 @@ g_mon_level: u32 // atomic f32 bits
 g_mon_cab_idx: u32 // atomic: cab to use; >= g_mon_cab_count means "no cab"
 g_output_rms_bits: u32 // atomic f32 bits: post-mix output level (for tests/UI)
 
-// preloaded monitor cab IRs (fixed buffers; the callback reads by index)
+// preloaded monitor cab IRs (fixed buffers; the callback reads by index).
+// g_mon_cab_count is the release/acquire fence: audio_monitor_load_cabs writes
+// the data+len arrays then atomic-stores the count; the callback atomic-loads the
+// count before reading them. So a (re)load stays safe even if monitoring is
+// enabled concurrently (e.g. a device re-init in a later story).
 g_mon_cab_data: [MON_CABS][ampchain.CAB_MAX]f32
 g_mon_cab_len: [MON_CABS]int
-g_mon_cab_count: int
+g_mon_cab_count: u32 // atomic
 
 // callback-only "last applied" trackers (audio thread touches these, no atomics)
 g_mon_bass_applied: f32 = 1e9
@@ -168,7 +172,7 @@ audio_monitor_tone :: proc() -> (bass_db, treble_db: f32) {
 
 audio_set_monitor_cab :: proc(idx: int) {intrinsics.atomic_store(&g_mon_cab_idx, u32(idx))}
 audio_monitor_cab :: proc() -> int {return int(intrinsics.atomic_load(&g_mon_cab_idx))}
-audio_monitor_cab_count :: proc() -> int {return g_mon_cab_count}
+audio_monitor_cab_count :: proc() -> int {return int(intrinsics.atomic_load(&g_mon_cab_count))}
 
 audio_output_level :: proc() -> f32 {return transmute(f32)intrinsics.atomic_load(&g_output_rms_bits)}
 
@@ -189,7 +193,7 @@ monitor_apply_config :: proc() {
 
 	ci := int(intrinsics.atomic_load(&g_mon_cab_idx))
 	if ci != g_mon_cab_applied {
-		if ci < g_mon_cab_count {
+		if ci < int(intrinsics.atomic_load(&g_mon_cab_count)) { // acquire: publishes the data arrays
 			ampchain.chain_set_cab(&g_monitor, g_mon_cab_data[ci][:g_mon_cab_len[ci]])
 		} else {
 			ampchain.chain_set_cab(&g_monitor, nil) // no cab -> passthrough
@@ -201,22 +205,24 @@ monitor_apply_config :: proc() {
 // audio_monitor_load_cabs decodes the cab IR files into the monitor's fixed
 // buffers (main thread, at startup). Truncated to the realtime tap budget.
 audio_monitor_load_cabs :: proc(paths: []string) {
-	g_mon_cab_count = 0
+	intrinsics.atomic_store(&g_mon_cab_count, 0) // hide the buffers while we rewrite them
+	count := 0
 	for p in paths {
-		if g_mon_cab_count >= MON_CABS do break
+		if count >= MON_CABS do break
 		cpath := strings.clone_to_cstring(p, context.temp_allocator)
 		cfg := ma.decoder_config_init(.f32, 1, 48000)
 		dec: ma.decoder
 		if ma.decoder_init_file(cpath, &cfg, &dec) != .SUCCESS do continue
 		read: u64
-		ma.decoder_read_pcm_frames(&dec, raw_data(g_mon_cab_data[g_mon_cab_count][:]), ampchain.CAB_MAX, &read)
+		ma.decoder_read_pcm_frames(&dec, raw_data(g_mon_cab_data[count][:]), ampchain.CAB_MAX, &read)
 		ma.decoder_uninit(&dec)
 		if read == 0 do continue
-		ir := g_mon_cab_data[g_mon_cab_count][:int(read)]
+		ir := g_mon_cab_data[count][:int(read)]
 		conv.normalize_l2(ir) // match the offline cab loudness handling
-		g_mon_cab_len[g_mon_cab_count] = int(read)
-		g_mon_cab_count += 1
+		g_mon_cab_len[count] = int(read)
+		count += 1
 	}
+	intrinsics.atomic_store(&g_mon_cab_count, u32(count)) // release: publishes the data arrays
 }
 
 @(private = "file")
