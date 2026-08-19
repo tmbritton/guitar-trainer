@@ -139,7 +139,12 @@ import_worker :: proc() {
 	buf: [512]u8
 	for {
 		nread, rerr := os.read(r, buf[:])
-		if nread <= 0 || rerr != nil do break // EOF or error: child finished
+		// core:os read() does not retry on EINTR — a signal interrupting the
+		// blocking read surfaces as (0, EINTR). Retrying (not breaking) is
+		// essential: a real Demucs run takes minutes, and breaking here would
+		// close the read end mid-run, SIGPIPE the child, and false-report failure.
+		if rerr == os.Platform_Error.EINTR do continue
+		if nread <= 0 || rerr != nil do break // real EOF or error: child finished
 		for i in 0 ..< nread {
 			c := buf[i]
 			if c == '\n' {
