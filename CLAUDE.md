@@ -65,6 +65,10 @@ src/
   import.odin      song-import worker (spawn separate.py, read progress pipe)
   library.odin     library scan (finished songs) + import file-browser listing
   import_view.odin file browser / importing-progress / library screens (view)
+  stems.odin       decode a song's 6 stems to mono f32 @ 48k (Song_Audio)
+  player.odin      song player: producer thread mixes stems -> PCM ring; transport
+  player_view.odin player screen: mixer strip + transport (pure view)
+  songprefs.odin   per-song mixer persistence (library/<song>/mixer.txt)
   selftests.odin   headless --*check verification modes
   riff.odin        --riff / --riff-wav tone-audition modes
   screenshot.odin  --screenshot PNG capture
@@ -85,6 +89,8 @@ src/
   store/           SQLite trial log (hand-written bindings) (unit-tested)
   menu/            pure keyboard-menu navigation math       (unit-tested)
   songlib/         import protocol parse + slug + song-dir  (unit-tested)
+  pcmring/         SPSC f32 sample ring (player->callback)  (unit-tested)
+  mix/             stem-mixer gain math (level/mute/solo)   (unit-tested)
   amp/             tanh overdrive fallback                  (unit-tested)
   conv/            IR convolution + L2 normalize            (unit-tested)
   tsf/  nam/       third-party C/C++ libs + Odin bindings + build scripts
@@ -135,6 +141,22 @@ and show on the **Play a Song** (Library) screen (the player itself is Story
 6.3). Real Demucs needs `pip install demucs` and is slow on CPU — a live/manual
 gate; automated coverage uses `separate.py --stub` (no ML) via `--importcheck`.
 
+## Song player (play-along)
+
+Opening a library song (Play a Song → ENTER) loads its 6 stems (`stems.odin`,
+mono f32 @ 48 kHz) and plays them mixed. The device is **mono** (see audio.odin),
+so stems mix down to a mono backing stream — stereo output would mean
+reconfiguring the device + every `out`-writer, deferred. A **producer thread**
+(`player.odin`) mixes the stems from a shared cursor (per-stem level/mute/solo,
+`mix` pkg) into a lock-free **PCM ring** (`pcmring` pkg); the audio callback
+drains that ring to `out` when `audio_player_activate(true)` — a separate mode
+from the drill (they never run at once). The UI issues commands (play/pause,
+seek, mixer) through atomics; it never touches stem PCM or the ring. Mixer state
+persists per song in `library/<song>/mixer.txt` (`songprefs.odin`). Controls:
+`SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level, `M` mute,
+`S` solo, `ESC` back (saves). Time-stretch/speed (SoundTouch) and live-input
+monitoring through an amp chain are later stories.
+
 ## Headless self-tests (no hardware; loopback)
 
 `./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
@@ -145,8 +167,10 @@ stray log / onset), `storecheck` (sqlite write, cross-check with `sqlite3` CLI),
 `progresscheck` (progress aggregates from the log), `sfplaycheck` (SoundFont
 sample voice), `rigdrillcheck` (async worker: full rig drill over loopback),
 `importcheck` (song-import worker: spawn `assets/separate.py --stub`, read the
-progress pipe, assert 6 stems written), `riff` / `riff-wav` (audition tone /
-export WAV + timing).
+progress pipe, assert 6 stems written), `playercheck` (song player: producer +
+PCM ring + mixer over synthetic stems — mute-all silent, solo isolates energy,
+pause halts the cursor — plus a stem-decode smoke), `riff` / `riff-wav`
+(audition tone / export WAV + timing).
 
 ## Status
 

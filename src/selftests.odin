@@ -9,6 +9,8 @@ import "core:fmt"
 import "core:os"
 import "core:time"
 
+import "core:math"
+
 import "clock"
 import "detect"
 import "game"
@@ -358,6 +360,122 @@ importcheck :: proc() {
 		}
 	}
 	fmt.println("PASS: song import (stub separator) spawns, reports progress, writes 6 stems")
+}
+
+// playercheck drives the song player's producer thread + PCM ring + mixer over
+// synthetic in-memory stems (no device: the test stands in as the ring consumer
+// via audio_pcm_read). It asserts the mixer math flows through the real DSP path
+// — mute-all is silent, solo isolates a stem's energy, pause halts the cursor —
+// then covers the decode path by loading 6 tone WAVs from disk.
+playercheck :: proc() {
+	L :: 48000 // 1 s of mono @ 48 kHz per stem
+	// each stem is a distinct constant, so a solo'd stem's RMS equals its value
+	amps := [6]f32{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}
+
+	make_synth :: proc(amps: [6]f32, n: int) -> Song_Audio {
+		sa: Song_Audio
+		sa.frames = n
+		for i in 0 ..< 6 {
+			sa.ctl[i] = {level = 1}
+			s := make([]f32, n)
+			for j in 0 ..< n do s[j] = amps[i]
+			sa.stems[i] = s
+		}
+		return sa
+	}
+
+	// --- mute all -> silence ---
+	a := make_synth(amps, L)
+	for i in 0 ..< 6 do a.ctl[i].mute = true
+	player_open(a)
+	rms_muted := drain_rms(24000)
+	player_close()
+	stems_free(&a)
+	if rms_muted > 1e-4 {
+		fmt.eprintfln("FAIL: mute-all should be silent, got RMS %.5f", rms_muted)
+		os.exit(1)
+	}
+
+	// --- solo one stem -> only its energy ---
+	b := make_synth(amps, L)
+	b.ctl[3].solo = true // "guitar" is index 3 (songlib.STEMS order)
+	player_open(b)
+	rms_solo := drain_rms(24000)
+	cursor_after := player_cursor()
+	player_close()
+	stems_free(&b)
+	if abs(rms_solo - amps[3]) > 0.01 {
+		fmt.eprintfln("FAIL: solo RMS %.4f, expected ~%.4f", rms_solo, amps[3])
+		os.exit(1)
+	}
+	if cursor_after <= 0 {
+		fmt.eprintln("FAIL: cursor did not advance during playback")
+		os.exit(1)
+	}
+
+	// --- pause halts the cursor ---
+	c := make_synth(amps, L)
+	player_open(c)
+	for drain_rms(2000) == 0 {} // let it produce a bit
+	player_toggle() // playing -> paused
+	time.sleep(20 * time.Millisecond)
+	c1 := player_cursor()
+	time.sleep(60 * time.Millisecond)
+	c2 := player_cursor()
+	player_close()
+	stems_free(&c)
+	if c1 != c2 {
+		fmt.eprintfln("FAIL: cursor advanced while paused (%d -> %d)", c1, c2)
+		os.exit(1)
+	}
+
+	// --- decode path: write 6 tone WAVs, load them ---
+	dir :: "/tmp/gt_playerdec"
+	os.remove_all(dir)
+	os.make_directory(dir)
+	defer os.remove_all(dir)
+	tone: [L]f32
+	for j in 0 ..< L do tone[j] = 0.3 * math.sin(2 * math.PI * 220 * f32(j) / clock.SAMPLE_RATE)
+	for stem in songlib.STEMS {
+		if !write_wav(fmt.tprintf("%s/%s.wav", dir, stem), tone[:]) {
+			fmt.eprintfln("FAIL: could not write %s.wav", stem)
+			os.exit(1)
+		}
+	}
+	sa, ok := stems_load(dir)
+	defer stems_free(&sa)
+	if !ok || sa.frames == 0 {
+		fmt.eprintln("FAIL: stems_load produced no audio")
+		os.exit(1)
+	}
+	sumsq: f64 = 0
+	for v in sa.stems[0] do sumsq += f64(v) * f64(v)
+	if math.sqrt(sumsq / f64(len(sa.stems[0]))) < 0.1 {
+		fmt.eprintln("FAIL: decoded stem is unexpectedly quiet")
+		os.exit(1)
+	}
+
+	fmt.println("PASS: song player mixes stems (mute/solo/pause) and decodes stem files")
+}
+
+// drain_rms reads up to `count` player samples from the ring (standing in for the
+// callback) and returns their RMS. Sleeps briefly while the producer catches up.
+@(private = "file")
+drain_rms :: proc(count: int) -> f32 {
+	buf: [4096]f32
+	sumsq: f64 = 0
+	got := 0
+	for waited := 0; got < count && waited < 2000; {
+		n := audio_pcm_read(buf[:])
+		if n == 0 {
+			time.sleep(time.Millisecond)
+			waited += 1
+			continue
+		}
+		for i in 0 ..< n do sumsq += f64(buf[i]) * f64(buf[i])
+		got += n
+	}
+	return got == 0 ? 0 : f32(math.sqrt(sumsq / f64(got)))
 }
 
 // storecheck writes a couple of trials to a DB so the result can be

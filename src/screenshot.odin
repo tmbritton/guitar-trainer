@@ -6,8 +6,10 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:time"
 import rl "vendor:raylib"
 
+import "clock"
 import "store"
 
 // screenshot renders the drill screen and the progress panel (with some seeded
@@ -15,7 +17,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" || a == "player" {
 			which = a
 		}
 	}
@@ -116,6 +118,25 @@ screenshot :: proc() {
 		g_shot_lib = &lv
 		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library.png")
 		fmt.println("wrote gt_library.png")
+	case "player":
+		// A synthetic ~3-min song (frames drive the display; stems are silent so
+		// nothing plays during capture): guitar turned down, drums muted.
+		sa: Song_Audio
+		sa.frames = 197 * int(clock.SAMPLE_RATE)
+		for i in 0 ..< 6 {
+			sa.ctl[i] = {level = 1}
+			sa.stems[i] = make([]f32, 1)
+		}
+		sa.ctl[3].level = 0.15 // guitar (index 3) down — the play-along move
+		sa.ctl[1].mute = true // drums muted
+		player_open(sa)
+		player_toggle() // pause so nothing sounds during the shot
+		player_seek(sa.frames / 3)
+		time.sleep(40 * time.Millisecond) // let the producer apply the seek
+		shot_frame(proc() {player_view_draw("black-dog", 3)}, "gt_player.png")
+		player_close()
+		stems_free(&sa)
+		fmt.println("wrote gt_player.png")
 	case:
 		shot_frame(proc() {drill_draw(g_shot_drill, true, true)}, "gt_drill.png")
 		fmt.println("wrote gt_drill.png")

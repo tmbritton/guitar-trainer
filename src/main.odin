@@ -40,6 +40,9 @@ main :: proc() {
 		case "--importcheck":
 			importcheck()
 			return
+		case "--playercheck":
+			playercheck()
+			return
 		case "--progresscheck":
 			progresscheck()
 			return

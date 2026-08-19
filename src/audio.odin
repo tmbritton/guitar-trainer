@@ -13,6 +13,7 @@ import ma "vendor:miniaudio"
 import "amp"
 import "clock"
 import "detect"
+import "pcmring"
 import "ring"
 
 RING_CAP :: 1024
@@ -78,6 +79,45 @@ Sample_Voice :: struct {
 }
 
 g_svoices: [SAMPLE_VOICES]Sample_Voice
+
+// Song-player output: the player's producer thread mixes stems into this PCM
+// ring; the callback drains it to `out` when player mode is active (song
+// play-along, a separate mode from the drill). SPSC: producer writes, callback
+// reads. ~341 ms at 48 kHz, so the producer has ample slack against underrun.
+PCM_RING_CAP :: 16384
+g_pcm_ring: pcmring.Ring(PCM_RING_CAP)
+g_player_active: u32 // atomic: callback drains g_pcm_ring into out when set
+
+// audio_player_activate switches the callback between drill mixing (off) and
+// draining the song-player PCM ring (on).
+audio_player_activate :: proc(on: bool) {
+	intrinsics.atomic_store(&g_player_active, on ? 1 : 0)
+}
+
+// audio_pcm_write enqueues mixed player samples (producer thread). Returns the
+// count accepted (short if the ring is full).
+audio_pcm_write :: proc(src: []f32) -> int {
+	return pcmring.write(&g_pcm_ring, src)
+}
+
+// audio_pcm_space is the ring's free capacity (producer thread).
+audio_pcm_space :: proc() -> int {
+	return pcmring.space(&g_pcm_ring)
+}
+
+// audio_pcm_read drains up to len(dst) player samples (consumer side). In the
+// running app the callback is the consumer; this is used by --playercheck, where
+// no device runs, to stand in for the callback and verify the producer/mix path.
+audio_pcm_read :: proc(dst: []f32) -> int {
+	return pcmring.read(&g_pcm_ring, dst)
+}
+
+// audio_pcm_reset empties the ring. Only safe when neither the producer nor the
+// draining callback is active (player_open calls it before activating).
+audio_pcm_reset :: proc() {
+	intrinsics.atomic_store(&g_pcm_ring.head, 0)
+	intrinsics.atomic_store(&g_pcm_ring.tail, 0)
+}
 
 @(private = "file")
 ks_noise :: proc() -> f32 {
@@ -358,9 +398,16 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 		intrinsics.atomic_store(&g_click_at, CLICK_DISARMED) // one-shot
 	}
 
-	// Mix scheduled synth voices (KS) and sample voices (SoundFont) into out.
-	mix_voices(out, start)
-	mix_samples(out, start)
+	// Player mode drains the song-player PCM ring straight to out (the drill
+	// isn't running); otherwise mix the drill's synth (KS) + sample (SoundFont)
+	// voices. The two modes are mutually exclusive (different screens).
+	if intrinsics.atomic_load(&g_player_active) != 0 {
+		got := pcmring.read(&g_pcm_ring, out)
+		for i in got ..< n do out[i] = 0 // underrun -> silence
+	} else {
+		mix_voices(out, start)
+		mix_samples(out, start)
+	}
 
 	// Onset detection reads the mic, or (loopback) the output we just wrote —
 	// the latter lets calibration/pitch self-tests run with no hardware.
@@ -383,8 +430,9 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 
 	// Amp-sim is downstream of detection (spec §9.3): overdrive the *playback*
 	// only, after the dry signal has been captured. Bypassed when a SoundFont
-	// supplies the (already amped) guitar tone.
-	if intrinsics.atomic_load(&g_amp_enabled) != 0 {
+	// supplies the (already amped) guitar tone, and in player mode (the backing
+	// track must not be overdriven).
+	if intrinsics.atomic_load(&g_player_active) == 0 && intrinsics.atomic_load(&g_amp_enabled) != 0 {
 		amp.amp_block(&g_amp, out)
 	}
 }

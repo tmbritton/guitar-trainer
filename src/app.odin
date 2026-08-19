@@ -73,6 +73,14 @@ run_app :: proc() {
 	start_dir_buf: [512]u8
 	start_dir := default_music_dir(start_dir_buf[:])
 
+	// player screen state
+	player_song: Song_Audio
+	defer stems_free(&player_song)
+	defer player_close() // runs before stems_free (LIFO): stop the producer, then free
+	player_sel: int
+	player_dir_buf, player_name_buf: [512]u8
+	player_dir, player_name: string
+
 	screen := Screen.Main_Menu
 	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
 	main_menu := Menu_Widget {
@@ -159,8 +167,43 @@ run_app :: proc() {
 		case .Library:
 			if rl.IsKeyPressed(.DOWN) do library_view_move(&lib, 1)
 			if rl.IsKeyPressed(.UP) do library_view_move(&lib, -1)
-			// ENTER -> open the player (Story 6.3); no-op stub for now.
+			if rl.IsKeyPressed(.ENTER) && len(lib.songs) > 0 {
+				s := lib.songs[lib.sel]
+				if sa, ok := stems_load(s.dir); ok {
+					player_song = sa
+					if ctl, pok := prefs_load(s.dir); pok {
+						for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
+					}
+					player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
+					player_name = string(player_name_buf[:copy(player_name_buf[:], s.name)])
+					player_sel = 0
+					player_open(player_song)
+					screen = .Player
+				}
+			}
 			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
+
+		case .Player:
+			SR :: int(clock.SAMPLE_RATE)
+			if rl.IsKeyPressed(.SPACE) do player_toggle()
+			if rl.IsKeyPressed(.RIGHT) do player_seek(player_cursor() + 5 * SR)
+			if rl.IsKeyPressed(.LEFT) do player_seek(player_cursor() - 5 * SR)
+			if rl.IsKeyPressed(.DOWN) do player_sel = menu.move(player_sel, 6, 1)
+			if rl.IsKeyPressed(.UP) do player_sel = menu.move(player_sel, 6, -1)
+			if rl.IsKeyPressed(.EQUAL) || rl.IsKeyPressed(.KP_ADD) {
+				player_set_level(player_sel, player_ctl(player_sel).level + 0.05)
+			}
+			if rl.IsKeyPressed(.MINUS) || rl.IsKeyPressed(.KP_SUBTRACT) {
+				player_set_level(player_sel, player_ctl(player_sel).level - 0.05)
+			}
+			if rl.IsKeyPressed(.M) do player_toggle_mute(player_sel)
+			if rl.IsKeyPressed(.S) do player_toggle_solo(player_sel)
+			if rl.IsKeyPressed(.ESCAPE) {
+				prefs_save(player_dir, player_snapshot_ctl()) // remember the mix
+				player_close()
+				stems_free(&player_song)
+				screen = .Library
+			}
 		}
 
 		// ---- draw the current screen into the offscreen texture ----
@@ -183,6 +226,8 @@ run_app :: proc() {
 			browser_draw(&browser)
 		case .Importing:
 			importing_draw(import_name)
+		case .Player:
+			player_view_draw(player_name, player_sel)
 		}
 		rl.EndTextureMode()
 
@@ -202,6 +247,7 @@ Screen :: enum {
 	Library,
 	Import,
 	Importing,
+	Player,
 }
 
 LIBRARY_DIR :: "library"
