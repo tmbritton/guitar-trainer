@@ -69,11 +69,17 @@ app still runs — it falls back to a built-in synth.
 
 ### Controls
 
+The app opens on a **main menu** (Play a Song · Import Song · Practice Drill ·
+Settings · Quit). `↑`/`↓` move, `Enter` selects, `Esc` goes back (and quits from
+the menu).
+
+**Practice Drill** — `P` toggles the progress view; `Esc` returns to the menu.
+
+**Settings** — tone and calibration live here:
+
 | Key | Action |
 |-----|--------|
-| `ESC` | quit |
-| `C` | calibrate round-trip latency (between trials) |
-| `P` | toggle the progress view |
+| `C` | calibrate round-trip latency |
 | `N` | neural amp on/off |
 | `A` | cycle amp model (Laney GH100S / Marshall JCM2000 / Dirty Shirley) |
 | `B` | cycle cabinet (Marshall 1960A / Mesa 4×12 / 5150) |
@@ -182,9 +188,9 @@ use):
 Vendored / fetched libraries:
 
 - [TinySoundFont](https://github.com/schellingb/TinySoundFont) (MIT) — SF2 synth
-  (`tsf/tsf.h`).
+  (`src/tsf/tsf.h`).
 - [NeuralAmpModelerCore](https://github.com/sdatkinson/NeuralAmpModelerCore)
-  (MIT) — neural amp DSP (built by `nam/build.sh`).
+  (MIT) — neural amp DSP (built by `src/nam/build.sh`).
 - [Eigen](https://eigen.tuxfamily.org/) (MPL2) and
   [nlohmann/json](https://github.com/nlohmann/json) (MIT) — NAM dependencies.
 - Odin's `vendor:raylib` and `vendor:miniaudio`.
