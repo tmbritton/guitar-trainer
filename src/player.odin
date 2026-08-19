@@ -102,7 +102,9 @@ player_toggle_solo :: proc(i: int) {
 }
 
 player_set_speed :: proc(x: f32) {
-	intrinsics.atomic_store(&g_player_speed, transmute(u32)clamp(x, SPEED_MIN, SPEED_MAX))
+	s := clamp(x, SPEED_MIN, SPEED_MAX)
+	if abs(s - 1) < 0.001 do s = 1 // snap to exact 1.0 so returning here re-enters true bypass
+	intrinsics.atomic_store(&g_player_speed, transmute(u32)s)
 }
 
 player_speed :: proc() -> f32 {
