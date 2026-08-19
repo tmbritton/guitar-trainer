@@ -145,6 +145,13 @@ screenshot :: proc() {
 		player_open(sa)
 		player_toggle() // pause so nothing sounds during the shot
 		player_set_speed(0.75) // show a slowed-down practice speed
+		// set an A-B loop (paused, so a seek pins the cursor for marking)
+		player_seek(sa.frames / 4)
+		time.sleep(20 * time.Millisecond)
+		player_loop_mark()
+		player_seek(sa.frames * 2 / 3)
+		time.sleep(20 * time.Millisecond)
+		player_loop_mark()
 		player_seek(sa.frames / 3)
 		time.sleep(40 * time.Millisecond) // let the producer apply the seek
 		shot_frame(proc() {player_view_draw("black-dog", 3)}, "gt_player.png")

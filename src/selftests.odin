@@ -673,6 +673,67 @@ devicecheck :: proc() {
 	fmt.println("PASS: device enumeration + re-init to explicit device IDs (clock live)")
 }
 
+// loopcheck verifies the A-B loop: with a loop set over [A,B), the producer keeps
+// the cursor inside the span and wraps back to A at B (never running past B).
+loopcheck :: proc() {
+	A :: 48000
+	B :: 96000
+	sa: Song_Audio
+	sa.frames = 400000
+	for i in 0 ..< 6 {
+		sa.ctl[i] = {level = 1}
+		sa.stems[i] = make([]f32, i == 0 ? sa.frames : 1)
+	}
+	for j in 0 ..< sa.frames do sa.stems[0][j] = 0.3 * math.sin(2 * math.PI * 220 * f32(j) / clock.SAMPLE_RATE)
+	player_open(sa)
+	defer stems_free(&sa)
+	defer player_close()
+
+	// Pause during setup so the (unthrottled, headless) producer doesn't race
+	// ahead filling the ring before we mark — a paused seek pins the cursor.
+	player_toggle()
+	player_seek(A)
+	time.sleep(20 * time.Millisecond)
+	player_loop_mark() // sets A at the cursor
+	player_seek(B)
+	time.sleep(20 * time.Millisecond)
+	player_loop_mark() // sets B + enables
+	player_toggle() // resume
+
+	la, lb := player_loop_a(), player_loop_b()
+	if !player_loop_on() || lb <= la {
+		fmt.eprintfln("FAIL: loop not set (a=%d b=%d on=%v)", la, lb, player_loop_on())
+		os.exit(1)
+	}
+
+	// drain output to advance the cursor, sampling it; expect it to cycle within
+	// [la,lb) and never exceed lb by more than a block.
+	buf: [4096]f32
+	max_cursor := 0
+	saw_low, saw_high := false, false
+	for iter := 0; iter < 6000; iter += 1 {
+		if audio_pcm_read(buf[:]) == 0 {
+			time.sleep(time.Millisecond)
+			continue
+		}
+		c := player_cursor()
+		max_cursor = max(max_cursor, c)
+		if c < la + (lb - la) / 4 do saw_low = true
+		if c > la + (lb - la) * 3 / 4 do saw_high = true
+		if saw_low && saw_high && iter > 400 do break
+	}
+
+	if max_cursor > lb + 4 * PLAYER_BLOCK {
+		fmt.eprintfln("FAIL: cursor ran past loop end B=%d (max %d)", lb, max_cursor)
+		os.exit(1)
+	}
+	if !(saw_low && saw_high) {
+		fmt.eprintln("FAIL: no evidence of looping (cursor didn't cycle across the A-B span)")
+		os.exit(1)
+	}
+	fmt.printfln("PASS: A-B loop keeps the cursor in [%d,%d) and wraps (max %d)", la, lb, max_cursor)
+}
+
 // storecheck writes a couple of trials to a DB so the result can be
 // cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
 storecheck :: proc() {

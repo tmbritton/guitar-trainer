@@ -94,6 +94,24 @@ run_app :: proc() {
 	}
 
 	for !rl.WindowShouldClose() {
+		// Drag-drop import: dropping an audio file anywhere starts the same import
+		// flow as the file browser (unless an import is already running).
+		if rl.IsFileDropped() {
+			dropped := rl.LoadDroppedFiles()
+			// ignore drops while a song is playing or an import is running (those
+			// screens own state we'd otherwise leak by switching away).
+			if dropped.count > 0 && screen != .Importing && screen != .Player {
+				path := string(dropped.paths[0])
+				if songlib.is_supported_audio(path) {
+					import_name = string(import_name_buf[:copy(import_name_buf[:], base_name(path))])
+					out_buf: [512]u8
+					import_start(path, song_out_dir(out_buf[:], path))
+					screen = .Importing
+				}
+			}
+			rl.UnloadDroppedFiles(dropped)
+		}
+
 		// ---- update the current screen ----
 		switch screen {
 		case .Main_Menu:
@@ -221,6 +239,8 @@ run_app :: proc() {
 			if rl.IsKeyPressed(.X) do adjust_monitor_tone(1, 0)
 			if rl.IsKeyPressed(.C) do adjust_monitor_tone(0, -1)
 			if rl.IsKeyPressed(.V) do adjust_monitor_tone(0, 1)
+			if rl.IsKeyPressed(.D) do audio_set_monitor_dry(!audio_monitor_dry())
+			if rl.IsKeyPressed(.L) do player_loop_mark() // A-B loop: mark A, mark B, clear
 			if rl.IsKeyPressed(.ESCAPE) {
 				prefs_save(player_dir, player_snapshot_ctl(), current_rig()) // remember mix + rig + speed
 				audio_monitor_enable(false) // stop monitoring on the menus
@@ -379,6 +399,7 @@ apply_rig :: proc(r: Rig) {
 	audio_set_monitor_tone(r.bass_db, r.treble_db)
 	audio_set_monitor_level(r.level)
 	audio_set_monitor_cab(r.cab)
+	audio_set_monitor_dry(r.dry)
 }
 
 // current_rig snapshots the live monitor + speed for saving with the song.
@@ -392,6 +413,7 @@ current_rig :: proc() -> Rig {
 		level = audio_monitor_level(),
 		cab = audio_monitor_cab(),
 		speed = player_speed(),
+		dry = audio_monitor_dry(),
 	}
 }
 

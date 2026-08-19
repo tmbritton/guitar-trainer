@@ -139,6 +139,7 @@ g_mon_bass: u32 // atomic f32 bits (dB)
 g_mon_treble: u32 // atomic f32 bits (dB)
 g_mon_level: u32 // atomic f32 bits
 g_mon_cab_idx: u32 // atomic: cab to use; >= g_mon_cab_count means "no cab"
+g_mon_dry: u32 // atomic 0/1: bypass the amp chain (clean passthrough) when set
 g_output_rms_bits: u32 // atomic f32 bits: post-mix output level (for tests/UI)
 
 // preloaded monitor cab IRs (fixed buffers; the callback reads by index).
@@ -173,6 +174,11 @@ audio_monitor_tone :: proc() -> (bass_db, treble_db: f32) {
 audio_set_monitor_cab :: proc(idx: int) {intrinsics.atomic_store(&g_mon_cab_idx, u32(idx))}
 audio_monitor_cab :: proc() -> int {return int(intrinsics.atomic_load(&g_mon_cab_idx))}
 audio_monitor_cab_count :: proc() -> int {return int(intrinsics.atomic_load(&g_mon_cab_count))}
+
+// Dry monitoring: pass the input straight through (no amp chain) at the monitor
+// level, for players who use their own outboard amp/tone.
+audio_set_monitor_dry :: proc(on: bool) {intrinsics.atomic_store(&g_mon_dry, on ? 1 : 0)}
+audio_monitor_dry :: proc() -> bool {return intrinsics.atomic_load(&g_mon_dry) != 0}
 
 audio_output_level :: proc() -> f32 {return transmute(f32)intrinsics.atomic_load(&g_output_rms_bits)}
 
@@ -542,9 +548,16 @@ audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameC
 	// playing along. Detection already consumed the dry `src` above (spec §9.3), so
 	// monitoring never feeds it. Callback owns g_monitor; it applies UI changes here.
 	if intrinsics.atomic_load(&g_mon_on) != 0 {
-		monitor_apply_config()
-		for i in 0 ..< n {
-			out[i] = clamp(out[i] + ampchain.process(&g_monitor, src[i]), -1, 1)
+		if intrinsics.atomic_load(&g_mon_dry) != 0 {
+			lvl := transmute(f32)intrinsics.atomic_load(&g_mon_level) // clean passthrough
+			for i in 0 ..< n {
+				out[i] = clamp(out[i] + src[i] * lvl, -1, 1)
+			}
+		} else {
+			monitor_apply_config()
+			for i in 0 ..< n {
+				out[i] = clamp(out[i] + ampchain.process(&g_monitor, src[i]), -1, 1)
+			}
 		}
 	}
 

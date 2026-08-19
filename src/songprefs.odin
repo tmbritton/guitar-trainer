@@ -24,10 +24,11 @@ Rig :: struct {
 	level:     f32, // monitor mix level
 	cab:       int, // monitor cab index
 	speed:     f32, // playback speed
+	dry:       bool, // monitor bypass (clean passthrough, no amp chain)
 }
 
 default_rig :: proc() -> Rig {
-	return Rig{monitor = false, drive = 2, bass_db = 0, treble_db = 0, level = 0.5, cab = 0, speed = 1}
+	return Rig{monitor = false, drive = 2, bass_db = 0, treble_db = 0, level = 0.5, cab = 0, speed = 1, dry = false}
 }
 
 @(private = "file")
@@ -43,7 +44,7 @@ prefs_save :: proc(dir: string, ctl: [6]mix.Stem_Ctl, rig: Rig) -> bool {
 	}
 	fmt.sbprintf(
 		&b,
-		"rig %d %.4f %.4f %.4f %.4f %d %.4f\n",
+		"rig %d %.4f %.4f %.4f %.4f %d %.4f %d\n",
 		int(rig.monitor),
 		rig.drive,
 		rig.bass_db,
@@ -51,6 +52,7 @@ prefs_save :: proc(dir: string, ctl: [6]mix.Stem_Ctl, rig: Rig) -> bool {
 		rig.level,
 		rig.cab,
 		rig.speed,
+		int(rig.dry),
 	)
 	return os.write_entire_file(prefs_path(dir), transmute([]u8)strings.to_string(b)) == nil
 }
@@ -108,4 +110,5 @@ parse_rig :: proc(fields: []string, rig: ^Rig) {
 	rig.level = f(fields, 5, rig.level)
 	rig.cab = n(fields, 6, rig.cab)
 	rig.speed = f(fields, 7, rig.speed)
+	rig.dry = n(fields, 8, int(rig.dry)) != 0
 }

@@ -32,6 +32,9 @@ SPEED_MAX :: 1.25 // fastest
 @(private = "file") g_player_solo: [6]u32 // atomic 0/1
 @(private = "file") g_player_speed: u32 // atomic f32 bits: playback speed (1.0 = normal)
 @(private = "file") g_stretch: rawptr // SoundTouch handle; producer-owned once open
+@(private = "file") g_loop_a: i64 = -1 // atomic: A-B loop start frame (-1 = unset)
+@(private = "file") g_loop_b: i64 = -1 // atomic: A-B loop end frame (-1 = unset)
+@(private = "file") g_loop_on: u32 // atomic 0/1: loop active
 
 // player_open takes ownership of playback for `sa` (the caller still owns the
 // PCM and frees it with stems_free after player_close). Autostarts playing.
@@ -44,6 +47,7 @@ player_open :: proc(sa: Song_Audio) {
 	}
 	intrinsics.atomic_store(&g_player_cursor, 0)
 	intrinsics.atomic_store(&g_player_seek, -1)
+	player_loop_clear() // loop points are transient — start fresh per song
 	intrinsics.atomic_store(&g_player_speed, transmute(u32)f32(1))
 	intrinsics.atomic_store(&g_player_playing, 1)
 	intrinsics.atomic_store(&g_player_stop, 0)
@@ -111,6 +115,36 @@ player_speed :: proc() -> f32 {
 	return transmute(f32)intrinsics.atomic_load(&g_player_speed)
 }
 
+// player_loop_mark cycles the A-B loop with one key: unset -> set A (at cursor)
+// -> set B (at cursor; ordered so A<B) + enable -> clear.
+player_loop_mark :: proc() {
+	a := intrinsics.atomic_load(&g_loop_a)
+	b := intrinsics.atomic_load(&g_loop_b)
+	cur := i64(player_cursor())
+	switch {
+	case a < 0:
+		intrinsics.atomic_store(&g_loop_a, cur)
+	case b < 0:
+		lo, hi := min(a, cur), max(a, cur)
+		if hi <= lo do hi = lo + 1 // degenerate: keep a non-empty span
+		intrinsics.atomic_store(&g_loop_a, lo)
+		intrinsics.atomic_store(&g_loop_b, hi)
+		intrinsics.atomic_store(&g_loop_on, 1) // enable last: A and B are published
+	case:
+		player_loop_clear()
+	}
+}
+
+player_loop_clear :: proc() {
+	intrinsics.atomic_store(&g_loop_on, 0)
+	intrinsics.atomic_store(&g_loop_a, -1)
+	intrinsics.atomic_store(&g_loop_b, -1)
+}
+
+player_loop_on :: proc() -> bool {return intrinsics.atomic_load(&g_loop_on) != 0}
+player_loop_a :: proc() -> int {return int(intrinsics.atomic_load(&g_loop_a))}
+player_loop_b :: proc() -> int {return int(intrinsics.atomic_load(&g_loop_b))}
+
 // player_ctl reads back a stem's current mixer state (for the UI and for saving).
 player_ctl :: proc(i: int) -> mix.Stem_Ctl {
 	return mix.Stem_Ctl {
@@ -167,6 +201,18 @@ player_loop :: proc() {
 		}
 
 		cursor := int(intrinsics.atomic_load(&g_player_cursor))
+
+		// A-B loop: wrap back to A when the cursor reaches B (like a seek).
+		loop_on := intrinsics.atomic_load(&g_loop_on) != 0
+		loop_a := int(intrinsics.atomic_load(&g_loop_a))
+		loop_b := min(int(intrinsics.atomic_load(&g_loop_b)), g_player_song.frames)
+		looping := loop_on && loop_b > loop_a && loop_a >= 0
+		if looping && cursor >= loop_b {
+			cursor = loop_a
+			intrinsics.atomic_store(&g_player_cursor, u64(cursor))
+			soundtouch.st_clear(g_stretch) // drop buffered audio from the old position
+		}
+
 		if cursor >= g_player_song.frames { // reached the end
 			if !bypass { // flush the stretcher tail before pausing
 				soundtouch.st_flush(g_stretch)
@@ -188,6 +234,7 @@ player_loop :: proc() {
 		any_solo := mix.any_solo(ctls[:])
 
 		n := min(PLAYER_BLOCK, g_player_song.frames - cursor)
+		if looping && cursor < loop_b do n = min(n, loop_b - cursor) // don't cross B
 		for j in 0 ..< n do block[j] = 0
 		for i in 0 ..< 6 {
 			g := mix.stem_gain(ctls[i], any_solo)

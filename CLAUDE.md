@@ -175,15 +175,19 @@ low-latency, allocation-free (holds under `-debug`). Detection still reads the
 dry signal upstream (spec §9.3) — monitoring never feeds it. The chain is owned
 by the callback; the UI changes params via atomics (`audio_set_monitor_*`), which
 the callback applies; cab IRs are preloaded into fixed buffers so switching is a
-race-free atomic index. **Mono device caveat:** the Rocksmith Real Tone cable is
-input-only, so binding capture (cable) and playback (speakers) to different
-devices needs the audio-device selector — a near-term follow-up (a full interface
-works as default duplex).
+race-free atomic index. **Dry monitoring** (`D`) bypasses the amp chain — a clean
+passthrough at the monitor level for players using their own outboard amp.
+
+**A-B loop:** `L` cycles mark-A → mark-B → clear (`player.odin`; loop points as
+atomics, transient — reset on reopen). The producer wraps the cursor back to A at
+B (like a seek: `st_clear`s the stretcher, clamps the block so it never crosses
+B). **Drag-drop import:** dropping an audio file on the window (`rl.IsFileDropped`)
+starts the same import flow as the browser.
 
 Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level,
-`M` mute, `S` solo, `[`/`]` speed, `G` monitor on/off, `,`/`.` drive, `B` cab,
-`9`/`0` monitor level, `Z`/`X` bass, `C`/`V` treble, `ESC` back (saves mix + rig
-+ speed per song).
+`M` mute, `S` solo, `[`/`]` speed, `L` A-B loop, `G` monitor on/off, `D` dry
+(bypass), `,`/`.` drive, `B` cab, `9`/`0` monitor level, `Z`/`X` bass, `C`/`V`
+treble, `ESC` back (saves mix + rig + speed per song).
 
 ## Audio-device selection
 
@@ -217,7 +221,8 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 0.5x through the real producer), `monitorcheck` (live-monitor amp chain: over
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
-device IDs; master clock stays live), `riff` / `riff-wav` (audition tone /
+device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
+cursor inside the span and wraps at B), `riff` / `riff-wav` (audition tone /
 export WAV + timing).
 
 ## Status

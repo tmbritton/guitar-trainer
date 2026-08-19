@@ -52,6 +52,9 @@ main :: proc() {
 		case "--devicecheck":
 			devicecheck()
 			return
+		case "--loopcheck":
+			loopcheck()
+			return
 		case "--progresscheck":
 			progresscheck()
 			return
