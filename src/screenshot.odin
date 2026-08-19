@@ -17,7 +17,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" || a == "player" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" || a == "player" || a == "settings" {
 			which = a
 		}
 	}
@@ -102,6 +102,9 @@ screenshot :: proc() {
 		}
 		rl.TakeScreenshot("gt_fullscreen.png")
 		fmt.println("wrote gt_fullscreen.png")
+	case "settings":
+		shot_frame(proc() {settings_draw(true, "offset 12 samples (0.25 ms)")}, "gt_settings.png")
+		fmt.println("wrote gt_settings.png")
 	case "import":
 		b: Browser
 		browser_open(&b, "assets") // has some .wav files to list

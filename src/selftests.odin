@@ -613,6 +613,66 @@ sample_out_max :: proc(ms: int) -> f32 {
 	return m
 }
 
+// devicecheck verifies audio-device enumeration and the re-init-to-explicit-IDs
+// path: it lists capture/playback devices, then rebinds the duplex device to the
+// default devices *by ID* and asserts the master clock keeps advancing (device
+// live). The Rocksmith-cable routing itself is a plug-in-and-listen gate; this
+// exercises the mechanism with the built-in devices. Preserves any real audio.txt.
+devicecheck :: proc() {
+	// preserve the user's device config (audio_reinit rewrites it)
+	had_conf := os.exists("audio.txt")
+	saved: []u8
+	if had_conf do saved, _ = os.read_entire_file("audio.txt", context.allocator)
+	defer {
+		if had_conf {
+			_ = os.write_entire_file("audio.txt", saved)
+			delete(saved)
+		} else {
+			os.remove("audio.txt")
+		}
+	}
+
+	if !audio_init() {
+		fmt.eprintln("FAIL: audio_init returned false")
+		os.exit(1)
+	}
+	defer audio_shutdown()
+
+	caps := audio_capture_devices()
+	pbs := audio_playback_devices()
+	fmt.printfln("capture devices: %d,  playback devices: %d", len(caps), len(pbs))
+	for d, i in caps do fmt.printfln("  cap[%d] %s%s", i, d.name, d.is_default ? "  (default)" : "")
+	for d, i in pbs do fmt.printfln("  pb [%d] %s%s", i, d.name, d.is_default ? "  (default)" : "")
+	if len(caps) == 0 || len(pbs) == 0 {
+		fmt.eprintln("FAIL: no capture or playback devices enumerated")
+		os.exit(1)
+	}
+
+	find_default :: proc(devs: []Audio_Device) -> int {
+		for d, i in devs do if d.is_default do return i
+		return 0
+	}
+
+	before := audio_clock_now()
+	if !audio_reinit(find_default(caps), find_default(pbs)) {
+		fmt.eprintln("FAIL: audio_reinit to default devices failed")
+		os.exit(1)
+	}
+	advanced := false
+	for w := 0; w < 1000; w += 1 {
+		if audio_clock_now() > before + u64(clock.SAMPLE_RATE / 100) { // ~10 ms of samples
+			advanced = true
+			break
+		}
+		time.sleep(time.Millisecond)
+	}
+	if !advanced {
+		fmt.eprintln("FAIL: master clock did not advance after device re-init")
+		os.exit(1)
+	}
+	fmt.println("PASS: device enumeration + re-init to explicit device IDs (clock live)")
+}
+
 // storecheck writes a couple of trials to a DB so the result can be
 // cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
 storecheck :: proc() {

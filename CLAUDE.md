@@ -72,7 +72,9 @@ src/
   selftests.odin   headless --*check verification modes
   riff.odin        --riff / --riff-wav tone-audition modes
   screenshot.odin  --screenshot PNG capture
-  audio.odin       duplex ma_device, callback, click generator, loopback
+  audio.odin       duplex ma_device, callback, click generator, loopback, monitor
+  audiodev.odin    device enumeration + capture/playback selection + re-init
+  audioconf.odin   global audio-device config (audio.txt, name-based)
   soundfont.odin   TSF loading + strum/velocity render (sf_render_seq)
   namamp.odin      NAM neural-amp load/cycle;  ir.odin  cabinet IR convolve
   render.odin      background rig-render worker
@@ -183,6 +185,21 @@ Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level
 `9`/`0` monitor level, `Z`/`X` bass, `C`/`V` treble, `ESC` back (saves mix + rig
 + speed per song).
 
+## Audio-device selection
+
+The **Rocksmith Real Tone cable is input-only**, so the single duplex `ma_device`
+binds its **capture** (the cable) and **playback** (speakers) to *different*
+devices — miniaudio allows distinct `capture.pDeviceID`/`playback.pDeviceID` in
+one duplex config (`nil` = default). We own an `ma_context` (`audiodev.odin`) to
+enumerate devices and bind chosen IDs; `device_open` builds the config from the
+current selection, shared by `audio_init` and `audio_reinit` (Settings picker).
+Selection resolves at startup: a name saved in `audio.txt` (`audioconf.odin`) →
+else a **Rocksmith/Real-Tone/Guitar** capture auto-detect → else system default.
+Settings: `1` cycles the audio IN device, `2` the OUT device (re-inits + saves).
+A full interface (in+out) just works as the default duplex. Verified headless by
+`--devicecheck` (enumerate + re-init to explicit IDs, clock stays live); the
+Rocksmith routing itself is a plug-in-and-listen gate.
+
 ## Headless self-tests (no hardware; loopback)
 
 `./guitar-trainer --<check>`: `audiocheck` (device+clock live), `calibcheck`
@@ -199,7 +216,9 @@ pause halts the cursor — plus a stem-decode smoke), `speedcheck` (SoundTouch
 time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 0.5x through the real producer), `monitorcheck` (live-monitor amp chain: over
 loopback, output rises with monitoring on and returns to baseline at level 0),
-`riff` / `riff-wav` (audition tone / export WAV + timing).
+`devicecheck` (enumerate audio devices; re-init the duplex device to explicit
+device IDs; master clock stays live), `riff` / `riff-wav` (audition tone /
+export WAV + timing).
 
 ## Status
 

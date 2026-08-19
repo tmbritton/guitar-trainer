@@ -253,29 +253,18 @@ audio_init :: proc() -> bool {
 	intrinsics.atomic_store(&g_mon_treble, transmute(u32)f32(0))
 	intrinsics.atomic_store(&g_mon_cab_idx, 0)
 
-	cfg := ma.device_config_init(.duplex)
-	cfg.sampleRate = clock.SAMPLE_RATE
-	cfg.periodSizeInFrames = PERIOD_FRAMES
-	cfg.capture.format = .f32
-	cfg.capture.channels = 1
-	cfg.playback.format = .f32
-	cfg.playback.channels = 1
-	cfg.dataCallback = audio_callback
-	cfg.pUserData = nil
-
-	if ma.device_init(nil, &cfg, &g_device) != .SUCCESS {
-		return false
-	}
-	if ma.device_start(&g_device) != .SUCCESS {
-		ma.device_uninit(&g_device)
-		return false
-	}
-	return true
+	// Own an enumeration context so we can bind capture/playback to specific
+	// devices (the Rocksmith cable is input-only — see audiodev.odin). Best-effort:
+	// if it fails, device_open falls back to the system default (nil context).
+	audiodev_init_context()
+	audio_resolve_selection()
+	return device_open()
 }
 
 audio_shutdown :: proc() {
 	ma.device_stop(&g_device)
 	ma.device_uninit(&g_device)
+	audiodev_uninit_context()
 }
 
 // audio_poll drains one event from the ring on the main thread.

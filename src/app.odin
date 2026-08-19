@@ -135,6 +135,10 @@ run_app :: proc() {
 				if rl.IsKeyPressed(.N) do nam_amp_toggle()
 				if rl.IsKeyPressed(.A) do nam_amp_next()
 			}
+			if audio_ok { // audio in/out device selection (for the Rocksmith cable etc.)
+				if rl.IsKeyPressed(.ONE) do cycle_capture_device()
+				if rl.IsKeyPressed(.TWO) do cycle_playback_device()
+			}
 			if audio_ok && rl.IsKeyPressed(.C) {
 				if offset, ok := run_calibration(5); ok {
 					calib_status = fmt.bprintf(calib_buf[:], "offset %d samples (%.2f ms)", offset, clock.samples_to_ms(u64(abs(offset))))
@@ -316,10 +320,16 @@ settings_draw :: proc(audio_ok: bool, calib_status: string) {
 
 	rl.DrawText(fmt.ctprintf("calibration:  %s", calib_status), 40, 200, 18, UI_DIM)
 
-	rl.DrawText("F / V   guitar  /  preset", 40, 260, 18, UI_INK)
-	rl.DrawText("N / A   neural amp on-off  /  model", 40, 288, 18, UI_INK)
-	rl.DrawText("B / I   cabinet  /  on-off", 40, 316, 18, UI_INK)
-	rl.DrawText("C       calibrate round-trip latency", 40, 344, 18, UI_INK)
+	// audio in/out devices (the Rocksmith cable is input-only, so in and out can
+	// be different devices)
+	ui_panel(40, 228, 720, 58, UI_FRAME_DK)
+	rl.DrawText("AUDIO", 54, 236, 16, UI_DIM)
+	rl.DrawText(fmt.ctprintf("in  %s", device_label(audio_capture_devices(), audio_selected_capture())), 130, 236, 18, UI_INK)
+	rl.DrawText(fmt.ctprintf("out %s", device_label(audio_playback_devices(), audio_selected_playback())), 130, 260, 18, UI_INK)
+
+	rl.DrawText("F / V   guitar  /  preset          1   cycle audio IN device", 40, 306, 18, UI_INK)
+	rl.DrawText("N / A   neural amp on-off / model   2   cycle audio OUT device", 40, 332, 18, UI_INK)
+	rl.DrawText("B / I   cabinet  /  on-off          C   calibrate latency", 40, 358, 18, UI_INK)
 
 	rl.DrawText("ESC  back", 40, 448, 16, {90, 90, 120, 255})
 }
@@ -340,6 +350,26 @@ default_music_dir :: proc(buf: []u8) -> string {
 base_name :: proc(path: string) -> string {
 	if s := strings.last_index_byte(path, '/'); s >= 0 do return path[s + 1:]
 	return path
+}
+
+// cycle_capture_device / cycle_playback_device step through system-default (-1)
+// then each enumerated device, re-initing the duplex device and saving the choice.
+cycle_capture_device :: proc() {
+	next := audio_selected_capture() + 1
+	if next >= len(audio_capture_devices()) do next = -1
+	audio_reinit(next, audio_selected_playback())
+}
+
+cycle_playback_device :: proc() {
+	next := audio_selected_playback() + 1
+	if next >= len(audio_playback_devices()) do next = -1
+	audio_reinit(audio_selected_capture(), next)
+}
+
+// device_label names the selected device for a list, or "system default" for -1.
+device_label :: proc(devs: []Audio_Device, sel: int) -> cstring {
+	if sel >= 0 && sel < len(devs) do return fmt.ctprintf("%s", devs[sel].name)
+	return "system default"
 }
 
 // apply_rig pushes a song's saved rig onto the live monitor (audio.odin globals).

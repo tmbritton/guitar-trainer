@@ -15,6 +15,9 @@
 # trial log (local data)
 /trials.db
 
+# per-machine audio-device selection (local)
+/audio.txt
+
 # imported songs' separated stems (local data; produced by assets/separate.py)
 /library/
 
