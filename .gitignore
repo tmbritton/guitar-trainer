@@ -1,8 +1,8 @@
 # build artifacts
 /guitar-trainer
-/tools/audioprobe/audioprobe
-/tools/sfcheck/sfcheck
-/tsf/libtsf.a
+/src/tools/audioprobe/audioprobe
+/src/tools/sfcheck/sfcheck
+/src/tsf/libtsf.a
 *.o
 *.obj
 
@@ -23,9 +23,9 @@
 
 # neural amp models (third-party; fetch with assets/fetch.sh)
 /assets/*.nam
-# NAM build artifacts + fetched deps (Eigen, namcore) — rebuilt by nam/build.sh
-/nam/libnam.a
-/nam/vendor/
-/tools/namcheck/namcheck
-/tools/sfcheck/sfcheck
+# NAM build artifacts + fetched deps (Eigen, namcore) — rebuilt by src/nam/build.sh
+/src/nam/libnam.a
+/src/nam/vendor/
+/src/nam/obj/
+/src/tools/namcheck/namcheck
 /riff.wav

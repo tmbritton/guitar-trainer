@@ -12,7 +12,7 @@
 
 ## Global Constraints (copied from spec — apply to every story)
 
-- **Single native process, single binary.** No IPC, no daemon split, no web UI. `odin build .` produces the whole app.
+- **Single native process, single binary.** No IPC, no daemon split, no web UI. `odin build src` (via `./build.sh`) produces the whole app.
 - **Do NOT call raylib's `InitAudioDevice()`.** Own one `ma_device` in **duplex** mode: capture + playback in the same callback, one clock.
 - **The audio clock is master.** Never derive musical time from `GetFrameTime()` or frame count. A monotonic sample counter, incremented in the audio callback, drives every scheduling and scoring decision. Convert to seconds only for display.
 - **One SPSC lock-free ring buffer, audio → main.** The callback copies input, runs onset detection, pushes events. It **never allocates, never locks, never logs.**
@@ -82,3 +82,14 @@ Deferred. **Do not write detailed story plans for this epic until Epic 4's gate 
 ## Beyond v1 (v2 songs + fade ladder, v3+ deferred)
 
 Out of scope for this plan per spec §3 and §7. Recorded here so they are not forgotten: local `psarc → gp5 → render` import, the fade ladder against real material, level-6 dropout mode (v2); tune-by-ear, transcription trainer, sing-then-play, notation, other instruments (v3+).
+
+## Epic 6 — Stem Play-Along (new primary direction)
+
+A menu-driven song play-along: import a track, separate it into stems (external Demucs), mix/mute/solo/level + slow it down, and play the turned-down part yourself, judging by ear. Per-song amp/cab prefs; live input monitored through a realtime DSP amp chain (NAM stays offline). Design: `docs/superpowers/plans/` / the approved plan. The drill (Epics 0–4) stays as one menu entry.
+
+- [x] **Story 6.1 — Menu / screen router.** *(run_app is a keyboard-driven screen router; drill + tone/cab/calibration controls moved under Drill / Settings; `menu` pkg unit-tested. main.odin also split into focused files and all source moved under `src/`.)* `run_app` becomes a screen router (Main Menu → Play a Song / Import / Practice Drill / Settings / Quit); the drill + tone/cab/calibration controls move under Drill / Settings. Keyboard-driven, reuses `ui.odin`.
+- [ ] **Story 6.2 — Song import + Demucs separation with progress.** In-app file browser → spawn `separate.py` (Demucs 6-stem) on a worker → progress bar → cache stems to a library → Library screen.
+- [ ] **Story 6.3 — Player: stems + mixer + transport.** SPSC PCM ring + producer thread; load stems, play synced, per-stem mute/solo/level, play/pause/seek; persist mixer per song.
+- [ ] **Story 6.4 — Playback speed (time-stretch).** Vendored SoundTouch in the producer chain (pitch-preserving).
+- [ ] **Story 6.5 — Live monitoring + per-song rig.** Oversampled DSP amp chain (gain → oversampled waveshaper → tone stack → streaming-FIR cab) on the live input; per-song amp/cab/monitor prefs.
+- [ ] **Story 6.6 — Fast-follow.** A-B loop; drag-drop import; dry monitoring.

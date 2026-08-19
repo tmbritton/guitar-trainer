@@ -49,32 +49,54 @@ Per-story implementation plans live in `docs/epic-{N}/story-{M}.md`.
 
 ## Package layout
 
+All Odin source lives under `src/`. The application is `package main`
+(`src/*.odin`); each subdirectory is its own imported package. `build.sh`
+builds `src` → `./guitar-trainer` at the repo root (so runtime `assets/` paths
+resolve). Standalone tools and the C-backed binding modules (`tsf`, `nam`) also
+live under `src/`, so their relative imports (`../music`, `../../nam`) are
+unchanged by the layout.
+
 ```
-main.odin        window, game loop, headless self-test modes
-audio.odin       duplex ma_device, callback, click generator, loopback
-debug.odin       callback allocator selection (guard vs nil)
-calibration.odin run_calibration driver
-clock/           master sample clock + time conversion   (unit-tested)
-ring/            SPSC lock-free ring buffer               (unit-tested)
-detect/          onset detection (pitch detection: Epic 2)(unit-tested)
-rtalloc/         audio-thread allocation guard            (unit-tested)
-calib/           round-trip offset math                   (unit-tested)
-music/           keys, scale degrees, cadence             (unit-tested)
-game/            trial generation + judging               (unit-tested)
-store/           SQLite trial log (hand-written bindings) (unit-tested)
-tools/audioprobe standalone device enumerator
+src/
+  main.odin        entry point + command-line dispatch
+  app.odin         run_app: the keyboard-driven screen router + menu widget
+  drill.odin       drill state machine (Idle→Prep→Listen→Confirm→Fb_Prep→Feedback)
+  drill_view.odin  drill HUD + progress-panel rendering (pure view)
+  selftests.odin   headless --*check verification modes
+  riff.odin        --riff / --riff-wav tone-audition modes
+  screenshot.odin  --screenshot PNG capture
+  audio.odin       duplex ma_device, callback, click generator, loopback
+  soundfont.odin   TSF loading + strum/velocity render (sf_render_seq)
+  namamp.odin      NAM neural-amp load/cycle;  ir.odin  cabinet IR convolve
+  render.odin      background rig-render worker
+  calibration.odin run_calibration driver;  debug.odin  callback allocator select
+  ui.odin          raylib UI kit (panels, capsules, meters, colours)
+  wav.odin         16-bit PCM WAV writer
+  clock/           master sample clock + time conversion   (unit-tested)
+  ring/            SPSC lock-free ring buffer               (unit-tested)
+  detect/          onset + YIN pitch detection              (unit-tested)
+  rtalloc/         audio-thread allocation guard            (unit-tested)
+  calib/           round-trip offset math                   (unit-tested)
+  music/           keys, scale degrees, cadence             (unit-tested)
+  game/            trial generation + judging               (unit-tested)
+  store/           SQLite trial log (hand-written bindings) (unit-tested)
+  menu/            pure keyboard-menu navigation math       (unit-tested)
+  amp/             tanh overdrive fallback                  (unit-tested)
+  conv/            IR convolution + L2 normalize            (unit-tested)
+  tsf/  nam/       third-party C/C++ libs + Odin bindings + build scripts
+  tools/           standalone helpers (audioprobe, sfcheck, namcheck)
 ```
 
 ## Guitar tone (SoundFont)
 
-Playback uses **TinySoundFont** (`tsf/tsf.h`, compiled to `tsf/libtsf.a` by
-build.sh) loading a real sampled-guitar `.sf2`, then convolved with a **cabinet
+Playback uses **TinySoundFont** (`src/tsf/tsf.h`, compiled to `src/tsf/libtsf.a`
+by build.sh) loading a real sampled-guitar `.sf2`, then convolved with a **cabinet
 impulse response** (`conv` pkg; IR loaded via miniaudio's decoder in `ir.odin`)
 — the cab IR is the main electric-guitar realism step. Both are third-party
 binaries, not committed — run `assets/fetch.sh` to download the fonts + IRs.
 **Full modeled rig (best tone):** a clean-DI SoundFont (`assets/clean.sf2`) →
 **Neural Amp Modeler** (real-amp capture; NeuralAmpModelerCore built to
-`nam/libnam.a` by `nam/build.sh`, which fetches Eigen — `-march=native`, so
+`src/nam/libnam.a` by `src/nam/build.sh`, which fetches Eigen — `-march=native`, so
 build on the target machine) → cabinet IR. Amp models are `.nam` files in
 `assets/` (Laney/JCM2000/Dirty Shirley), fetched by `assets/fetch.sh`.
 

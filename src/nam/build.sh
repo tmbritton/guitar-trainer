@@ -34,4 +34,4 @@ done
 ld -r -o obj/nam_all.o "${objs[@]}"
 rm -f libnam.a && ar rcs libnam.a obj/nam_all.o
 rm -rf obj
-echo "built nam/libnam.a"
+echo "built src/nam/libnam.a"
