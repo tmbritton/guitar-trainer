@@ -25,6 +25,12 @@ if [ ! -f "src/nam/libnam.a" ]; then
 	bash src/nam/build.sh
 fi
 
+# SoundTouch (C++ time-stretch); build its static lib once (fetches the source).
+if [ ! -f "src/soundtouch/libsoundtouch.a" ]; then
+	echo "building soundtouch (time-stretch) static lib... (first time: clones source)"
+	bash src/soundtouch/build.sh
+fi
+
 # raylib links the X11 stack + GL. On this Fedora Atomic (Bluefin) host the dev
 # .so symlinks live under Homebrew, but Homebrew's ld doesn't search its own lib
 # path by default. Point the linker at it and bake an rpath so the binary runs.

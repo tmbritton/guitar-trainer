@@ -198,6 +198,8 @@ run_app :: proc() {
 			}
 			if rl.IsKeyPressed(.M) do player_toggle_mute(player_sel)
 			if rl.IsKeyPressed(.S) do player_toggle_solo(player_sel)
+			if rl.IsKeyPressed(.LEFT_BRACKET) do player_set_speed(player_speed() - 0.05)
+			if rl.IsKeyPressed(.RIGHT_BRACKET) do player_set_speed(player_speed() + 0.05)
 			if rl.IsKeyPressed(.ESCAPE) {
 				prefs_save(player_dir, player_snapshot_ctl()) // remember the mix
 				player_close()

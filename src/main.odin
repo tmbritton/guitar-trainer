@@ -43,6 +43,9 @@ main :: proc() {
 		case "--playercheck":
 			playercheck()
 			return
+		case "--speedcheck":
+			speedcheck()
+			return
 		case "--progresscheck":
 			progresscheck()
 			return

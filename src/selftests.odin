@@ -478,6 +478,71 @@ drain_rms :: proc(count: int) -> f32 {
 	return got == 0 ? 0 : f32(math.sqrt(sumsq / f64(got)))
 }
 
+// speedcheck drives the player through SoundTouch and verifies the time-stretch
+// ratio: in steady state, output-samples-per-input-frame is 1/speed. It samples
+// the input cursor across a measurement window (after a warmup) so SoundTouch's
+// constant buffering cancels out. Speed 1.0 exercises the bypass path (ratio 1),
+// 0.5 the stretch path (ratio ~2).
+speedcheck :: proc() {
+	// The measurement window must be >> the PCM ring capacity: cursor counts input
+	// PUT, drained counts output TAKEN, and they differ by the (bounded) ring fill,
+	// so a window many times PCM_RING_CAP makes that fill variance negligible.
+	WARMUP :: 48000
+	WINDOW :: 600000 // ~37x the ring capacity -> <3% fill-variance error
+
+	ratio_at :: proc(speed: f32) -> f32 {
+		sa: Song_Audio
+		sa.frames = 1_400_000 // enough input for warmup + window at 0.5x
+		for i in 0 ..< 6 {
+			sa.ctl[i] = {level = 1}
+			sa.stems[i] = make([]f32, i == 0 ? sa.frames : 1)
+		}
+		for j in 0 ..< sa.frames { // a 220 Hz tone in stem 0 (real content for WSOLA)
+			sa.stems[0][j] = 0.4 * math.sin(2 * math.PI * 220 * f32(j) / clock.SAMPLE_RATE)
+		}
+		player_open(sa)
+		player_set_speed(speed)
+		drain_n(WARMUP) // warmup: let the stretcher reach steady state at this tempo
+		c0 := player_cursor()
+		drained := drain_n(WINDOW) // measurement window (output samples)
+		c1 := player_cursor()
+		player_close()
+		stems_free(&sa)
+		if c1 <= c0 do return 0
+		return f32(drained) / f32(c1 - c0) // output / input = 1/speed
+	}
+
+	r1 := ratio_at(1.0)
+	if abs(r1 - 1.0) > 0.05 {
+		fmt.eprintfln("FAIL: speed 1.0 (bypass) ratio %.3f, expected ~1.0", r1)
+		os.exit(1)
+	}
+	r_half := ratio_at(0.5)
+	if abs(r_half - 2.0) > 0.1 {
+		fmt.eprintfln("FAIL: speed 0.5 stretch ratio %.3f, expected ~2.0", r_half)
+		os.exit(1)
+	}
+	fmt.printfln("PASS: playback speed time-stretches (1.0x ratio %.2f, 0.5x ratio %.2f)", r1, r_half)
+}
+
+// drain_n reads exactly `count` player samples from the ring (blocking while the
+// producer catches up); returns the number actually drained.
+@(private = "file")
+drain_n :: proc(count: int) -> int {
+	buf: [4096]f32
+	got := 0
+	for waited := 0; got < count && waited < 20000; {
+		n := audio_pcm_read(buf[:min(len(buf), count - got)])
+		if n == 0 {
+			time.sleep(time.Millisecond)
+			waited += 1
+			continue
+		}
+		got += n
+	}
+	return got
+}
+
 // storecheck writes a couple of trials to a DB so the result can be
 // cross-checked with the `sqlite3` CLI, and confirms the app links sqlite.
 storecheck :: proc() {

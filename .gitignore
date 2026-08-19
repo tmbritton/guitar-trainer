@@ -32,3 +32,8 @@
 /src/nam/obj/
 /src/tools/namcheck/namcheck
 /riff.wav
+
+# SoundTouch build artifacts + fetched source — rebuilt by src/soundtouch/build.sh
+/src/soundtouch/libsoundtouch.a
+/src/soundtouch/vendor/
+/src/soundtouch/obj/

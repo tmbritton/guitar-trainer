@@ -33,11 +33,12 @@ player_view_draw :: proc(song_name: string, sel: int) {
 	ui_text(playing ? "> PLAYING" : "|| PAUSED", 56, ty, 22, playing ? UI_GOOD : UI_GOLD)
 	cur, tot := player_cursor(), player_frames()
 	ui_text(fmt.ctprintf("%s / %s", mmss(cur), mmss(tot)), 210, ty, 22, UI_INK)
+	ui_text(fmt.ctprintf("%.2fx", player_speed()), 430, ty, 22, UI_GOLD)
 	frac := tot > 0 ? f32(cur) / f32(tot) : 0
 	ui_meter(56, ty + 34, 664, 12, frac, UI_BLUE)
 
 	rl.DrawText(
-		"SPACE play/pause   < / > seek   UP/DOWN stem   + / - level   M mute   S solo   ESC back",
+		"SPACE play  < > seek  UP/DOWN stem  +/- level  M mute  S solo  [ ] speed  ESC back",
 		40,
 		456,
 		15,

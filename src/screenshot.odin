@@ -131,6 +131,7 @@ screenshot :: proc() {
 		sa.ctl[1].mute = true // drums muted
 		player_open(sa)
 		player_toggle() // pause so nothing sounds during the shot
+		player_set_speed(0.75) // show a slowed-down practice speed
 		player_seek(sa.frames / 3)
 		time.sleep(40 * time.Millisecond) // let the producer apply the seek
 		shot_frame(proc() {player_view_draw("black-dog", 3)}, "gt_player.png")

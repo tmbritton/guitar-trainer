@@ -93,7 +93,7 @@ src/
   mix/             stem-mixer gain math (level/mute/solo)   (unit-tested)
   amp/             tanh overdrive fallback                  (unit-tested)
   conv/            IR convolution + L2 normalize            (unit-tested)
-  tsf/  nam/       third-party C/C++ libs + Odin bindings + build scripts
+  tsf/ nam/ soundtouch/  third-party C/C++ libs + Odin bindings + build scripts
   tools/           standalone helpers (audioprobe, sfcheck, namcheck)
 ```
 
@@ -152,10 +152,20 @@ reconfiguring the device + every `out`-writer, deferred. A **producer thread**
 drains that ring to `out` when `audio_player_activate(true)` — a separate mode
 from the drill (they never run at once). The UI issues commands (play/pause,
 seek, mixer) through atomics; it never touches stem PCM or the ring. Mixer state
-persists per song in `library/<song>/mixer.txt` (`songprefs.odin`). Controls:
-`SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level, `M` mute,
-`S` solo, `ESC` back (saves). Time-stretch/speed (SoundTouch) and live-input
-monitoring through an amp chain are later stories.
+persists per song in `library/<song>/mixer.txt` (`songprefs.odin`).
+
+**Speed / time-stretch:** **SoundTouch** (LGPL C++, `src/soundtouch/`, built
+on-target into `libsoundtouch.a` like nam/tsf) is spliced into the producer:
+each mixed block is fed through it and the stretched output goes to the ring.
+Pitch-preserving; the **cursor stays in input frames** so the transport time is
+right at any speed. At **speed 1.0 the stretcher is bypassed** (mix → ring
+directly), so the default path is unchanged and latency-free; it only engages
+when speed ≠ 1.0. Speed is clamped to 0.5–1.25 and resets to 1.0 on open
+(per-song speed persistence lands with the rig prefs in 6.5).
+
+Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level,
+`M` mute, `S` solo, `[`/`]` speed, `ESC` back (saves). Live-input monitoring
+through an amp chain is a later story.
 
 ## Headless self-tests (no hardware; loopback)
 
@@ -169,8 +179,10 @@ sample voice), `rigdrillcheck` (async worker: full rig drill over loopback),
 `importcheck` (song-import worker: spawn `assets/separate.py --stub`, read the
 progress pipe, assert 6 stems written), `playercheck` (song player: producer +
 PCM ring + mixer over synthetic stems — mute-all silent, solo isolates energy,
-pause halts the cursor — plus a stem-decode smoke), `riff` / `riff-wav`
-(audition tone / export WAV + timing).
+pause halts the cursor — plus a stem-decode smoke), `speedcheck` (SoundTouch
+time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
+0.5x through the real producer), `riff` / `riff-wav` (audition tone / export
+WAV + timing).
 
 ## Status
 
