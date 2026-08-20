@@ -68,11 +68,21 @@ Install prerequisites and stand up a buildable skeleton. Prefer mise for Odin.
 **The real milestone.** A hard gate: no v1+ work until three weeks of daily use.
 
 - [x] **Story 4.1 — Session & progress instrumentation.** *(store aggregates tested; progress panel toggled with P; `--progresscheck` PASS)* Session IDs on trials; a minimal progress view derived entirely from the trial log (no new tables). Enough to answer "did I practice today" and "am I improving."
-- [ ] **Story 4.2 — Three weeks of daily use.** Not a coding task. Use the drill daily; capture friction notes against open questions (§12): engagement past day 10, octave-agnostic slop, scheduling behavior. **Gate — do not proceed to Epic 5 until met.**
+- [~] **Story 4.2 — Three weeks of daily use. PARKED 2026-08-20.** *(The gate was
+  never met and is no longer being pursued: playing along with real songs turned
+  out to be far more fun than the drill, so the stem play-along (Epic 6) became
+  the product and the drill came off the main menu in Story 6.21. Worth noting
+  that this gate did its job — it existed to stop us building instead of playing,
+  and what it surfaced was that we were building the wrong thing. The drill code
+  and its self-tests stay in the tree, so this is reversible.)* Not a coding task.
+  Use the drill daily; capture friction notes against open questions (§12).
+  **Was the gate on Epic 5.**
 
-## Epic 5 — v1 Call and Response (Milestone M4) — GATED, plan later
+## Epic 5 — v1 Call and Response (Milestone M4) — PARKED
 
-Deferred. **Do not write detailed story plans for this epic until Epic 4's gate is met.** Listed only so the roadmap is visible.
+**Parked 2026-08-20 with Story 4.2.** This epic extends the *drill*, which is no
+longer the product (see Story 6.21). Listed only so the roadmap stays legible; do
+not plan it unless the drill comes back off the shelf.
 
 - [ ] **Story 5.1 — Phrase generation** (constrained random walks within a key/position).
 - [ ] **Story 5.2 — Playback + capture of a 1–2 bar phrase.**
@@ -85,7 +95,7 @@ Out of scope for this plan per spec §3 and §7. Recorded here so they are not f
 
 ## Epic 6 — Stem Play-Along (new primary direction)
 
-A menu-driven song play-along: import a track, separate it into stems (external Demucs), mix/mute/solo/level + slow it down, and play the turned-down part yourself, judging by ear. Per-song amp/cab prefs; live input monitored through a realtime DSP amp chain (NAM stays offline). Design: `docs/superpowers/plans/` / the approved plan. The drill (Epics 0–4) stays as one menu entry.
+A menu-driven song play-along: import a track, separate it into stems (external Demucs), mix/mute/solo/level + slow it down, and play the turned-down part yourself, judging by ear. Per-song amp/cab prefs; live input monitored through a realtime DSP amp chain (NAM stays offline). Design: `docs/superpowers/plans/` / the approved plan. **This is the product.** The drill (Epics 0–4) was originally kept as one menu entry; as of Story 6.21 it is off the menu — the code stays, but playing along with real songs proved far more compelling than drilling scale degrees.
 
 - [x] **Story 6.1 — Menu / screen router.** *(run_app is a keyboard-driven screen router; drill + tone/cab/calibration controls moved under Drill / Settings; `menu` pkg unit-tested. main.odin also split into focused files and all source moved under `src/`.)* `run_app` becomes a screen router (Main Menu → Play a Song / Import / Practice Drill / Settings / Quit); the drill + tone/cab/calibration controls move under Drill / Settings. Keyboard-driven, reuses `ui.odin`.
 - [x] **Story 6.2 — Song import + Demucs separation with progress.** *(Import screen = keyboard file browser; picking a file spawns `assets/separate.py` (Demucs `htdemucs_6s`, 6 stems) on a worker that reads its `PROGRESS/DONE/ERROR` stdout over a pipe → live progress bar → stems cached to `library/<slug>/` → Play a Song lists them. Pure logic in the `songlib` pkg (unit-tested); the subprocess/pipe path covered headless by `--importcheck` against `separate.py --stub`. Real Demucs is a live/manual gate.)* In-app file browser → spawn `separate.py` (Demucs 6-stem) on a worker → progress bar → cache stems to a library → Library screen.
@@ -224,6 +234,67 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   one, and it failed 1 in 6 under load — wall clock is now reported, never
   asserted, and `--loadcheck <dir>` measures the real thing on real FLAC.)* Decode stems
   on a worker, in parallel, behind a loading screen.
+
+- [ ] **Story 6.20 — SPACE restarts a finished song.** When a song reaches the
+  end the player sits on PAUSED and SPACE does nothing at all. **Cause:** the
+  producer's end-of-song branch (`player.odin`, `if cursor >= g_player_song.frames`)
+  stores `g_player_playing = 0` and leaves the cursor parked at `frames`.
+  `player_toggle` flips the flag back to 1, but the producer's very next
+  iteration hits the same branch and stores 0 again — so it is a true no-op, not
+  a slow response. Pressing play from the end should rewind first: seek to 0
+  (or to the armed section's A point, if one is armed) and play. Decide whether
+  that lives in `player_toggle` (UI thread, explicit) or in the producer's
+  "asked to play from the end" case, and note that a finished song is also the
+  one state where the transport readout should probably say something other than
+  PAUSED.
+
+- [ ] **Story 6.21 — Remove Practice Drill from the main menu.** The stem
+  play-along is the project now; the drill is no longer something to offer on the
+  way in. Drop the `"Practice Drill"` item from `main_items` (`app.odin:129`) and
+  its `case 2` route to `screen = .Drill`.
+  **Keep the drill code and its self-tests** rather than deleting them — the menu
+  entry is one line and one route, while `drill.odin` / `drill_view.odin` / the
+  `game` and `music` packages / the `store` trial log / `render.odin`'s NAM path
+  are a lot of working, tested machinery. Removing the door is reversible;
+  removing the rooms is not. `--drillcheck`, `--drillsim`, `--drillabandoncheck`,
+  `--rigdrillcheck` and `--progresscheck` should all keep passing untouched, and
+  `drill_init`/`drill_destroy` can stay in `run_app` (they are cheap) or move
+  behind the self-tests.
+  Loose ends to handle in the same pass: the drag-drop handler's
+  `if screen == .Drill do drill_abandon(&d)` guard (`app.odin:150`) becomes dead
+  but harmless; the file header comment naming the drill as a menu destination
+  (`app.odin:4`) needs updating; and `CLAUDE.md` still describes the drill as
+  "one menu entry".
+  **This is a direction change, not a menu edit** — decided 2026-08-20, on the
+  evidence of actually using it: *playing along with real songs is far more fun
+  than the drill.* Story 4.2 (three weeks of daily drill use) and all of Epic 5,
+  which it gates, are parked accordingly; Epic 6's header line about the drill
+  staying as one menu entry is corrected. The drill code stays in the tree and
+  under test, so this is reversible — but it is no longer the product.
+
+- [ ] **Story 6.22 — In-app amps and cabs: revisit once the interface arrives.**
+  Placeholder, deliberately unspecified. The requirements come from playing
+  through a real Hi-Z input; writing them before that is guessing, and guessing is
+  what the Story 4.2 gate existed to prevent. Two facts to hand whoever picks
+  this up:
+  - **The best amp modelling in the codebase is currently unreachable from the
+    product.** `render_submit` — the NAM (Neural Amp Modeler, real-amp capture)
+    path — is called only from `drill.odin`, `riff.odin` and the self-tests. The
+    drill is parked (6.21), so NAM's only interactive consumer is gone. What you
+    actually hear while playing along is `ampchain`, the lighter realtime DSP
+    (drive → oversampled waveshaper → tone shelves → FIR cab), chosen in Story
+    6.5 because NAM was assumed too slow for the callback.
+  - **That assumption is worth re-testing.** Measured here: `--riff-wav` renders
+    **6.34 s of audio in ~3.1 s wall — about 2x realtime**. So NAM is not
+    categorically too slow; the barrier is architectural (it runs on a render
+    worker producing whole clips, not inside the audio callback) plus the
+    latency budget, not raw throughput. 2x is thin headroom for hitting every
+    128-sample deadline and the per-block cost may not be uniform — but "measure
+    NAM in the callback properly" is a real option, not a fantasy. If it holds,
+    the play-along could use the same amp models the drill did.
+  Also unverified until the interface lands: the whole live-monitoring path
+  (Story 6.5) has only ever run over software loopback, and the Rocksmith cable's
+  input-only device binding (6.6) is a plug-in-and-listen gate.
 
 ## Epic 7 — Multi-platform distribution
 
