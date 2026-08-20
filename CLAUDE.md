@@ -110,6 +110,7 @@ src/
   game/            trial generation + judging               (unit-tested)
   store/           SQLite trial log (hand-written bindings) (unit-tested)
   menu/            pure keyboard-menu navigation math       (unit-tested)
+  keyrepeat/       held-key auto-repeat timing + key table  (unit-tested)
   songlib/         import protocol parse + slug + song-dir + meta.txt (unit-tested)
   places/          /proc/mounts parse -> media mount shortcuts   (unit-tested)
   sections/        practice-section format + speed-ladder math    (unit-tested)
@@ -331,6 +332,15 @@ clamps loop B to the song length but not loop A, so a span starting past the end
 `loop_span` holds that one definition, shared by the producer and the restart.
 The producer's end-of-song branch also bails while a seek is pending, or it would
 clobber the play flag a restart just set and leave the song rewound but paused.
+
+**Held keys repeat** (`keyrepeat` pkg): every control that *steps* a value — list
+cursors, levels, seek, speed, tone, and BACKSPACE in the text fields — fires once
+on the press, pauses 0.35 s, then repeats. Toggles and cycles (`M` `S` `G` `D`
+`B` `N` `K` `T`) and `DELETE` deliberately do not. The rate is ours, not
+`IsKeyPressedRepeat`'s: that one follows the OS keyboard setting (~30/s), which
+against a 5-second seek step would scrub 150 s of song per second held. The table
+is reset on every screen change, or a finger still down after ENTER would keep
+scrolling the screen it just opened.
 
 Controls: `SPACE` play/pause (restart at the end), `←/→` seek, `↑/↓` select
 stem, `+/-` level,

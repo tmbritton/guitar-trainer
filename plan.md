@@ -317,6 +317,116 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   `electric.sf2` (9 MB), `clean.sf2` and a `.nam` for the parked drill, and
   `drill_init` spawns a render worker that polls forever with no possible job.
 
+- [x] **Story 6.23 — Held keys auto-repeat (issue #2).** *(Every stepping control
+  fired exactly once per press: nudging a stem from 1.0 to 0.2 meant sixteen
+  separate taps on `-`, and seeking two minutes into a song meant twenty-four
+  taps on the right arrow. Holding the key did nothing at all, which reads as the
+  key being broken rather than as a design choice.)* Held keys now repeat: one
+  action on the press, a 0.35 s pause, then a steady stream while the key is
+  down.
+
+  The repeat rate belongs to the **action**, not to the desktop. raylib exposes
+  `IsKeyPressedRepeat`, but its rate is the OS keyboard setting — typically
+  ~30/s, which against a 5-second seek step would scrub 150 seconds of song per
+  second held. So the timing is ours: `keyrepeat.FAST` (0.05 s) for list cursors,
+  levels and tone knobs; `keyrepeat.SEEK` (0.15 s) for the transport and the
+  speed control, where each step is coarse and, in the stretcher's case,
+  expensive.
+
+  `keyrepeat.tick` returns a **count, not a bool**. A frame that ran long — a
+  stem decode, a window resize — still owes the repeats its elapsed time covered,
+  and deriving the count from accumulated seconds rather than from frames makes
+  the scroll speed identical at 30 fps and 144 fps. Two consequences fell out of
+  that and are covered by tests: the count is clamped (`MAX_BURST`), or a laptop
+  resumed from sleep would translate the whole suspend into actions and seek an
+  hour into the song on the frame it woke up; and a clamped burst is **dropped**
+  rather than credited, or the list would keep scrolling by itself after the
+  frame rate recovered.
+
+  Seeks accumulate into **one** jump rather than N: each `player_seek` is a
+  producer round-trip (clear the stretcher, refill the ring), so eight of them on
+  one frame would stutter where a single jump of the same distance is seamless.
+
+  **What deliberately does not repeat:** toggles and cycles (`M` `S` `G` `D` `B`
+  `N` `K` `T`) — auto-firing a toggle just flickers it — and `DELETE`, where half
+  a second of hold would take every practice section with it. `ENTER` and `ESC`
+  likewise. The repeating set is the *stepping* controls plus `BACKSPACE` in the
+  name field, which is what every text box on the machine already does.
+
+  Applies to: the main menu, the library drill-down, the file browser and its
+  Places list, `BACKSPACE` in both text fields, and on the player LEFT/RIGHT,
+  UP/DOWN, `+`/`-`, `[`/`]`, `9`/`0`, `,`/`.`, `Z`/`X`, `C`/`V`. The browser's
+  *other* BACKSPACE — the one that walks up a directory — deliberately stays
+  single-fire: it jumps a whole level, so a held key would shoot past the root
+  before you could read where you were.
+
+  **Review found five defects, four of them reproduced before fixing:**
+  - **A held key carried its repeat across a screen change.** One table, no
+    reset, and `tick` only rearms on a press edge or a release — so scrolling the
+    library and pressing ENTER without lifting your finger arrived at the player
+    with the hold already past its delay and jumped the stem selector ~4 rows in
+    the first 170 ms. Fixed with `keyrepeat.reset` on a screen change. Note a
+    gap-in-queries heuristic would *not* have fixed this: Main Menu -> Library
+    both query DOWN on consecutive frames, so there is no gap to detect — only
+    the router knows a screen changed.
+  - **A profile swap mid-hold wedged the key.** `fired` is credited in units of
+    the old rate, so a fast-to-slow swap left more repeats credited than the new
+    rate had earned and the key went dead for seconds. Latent (no key takes both
+    profiles today) but documented as supported, so it was fixed rather than
+    deleted: the credit is now re-derived from held time.
+  - **`query` before the first `next_frame` swallowed the keypress.** A fresh
+    slot and a fresh Table both sit at frame 0, so the within-frame cache hit on
+    the very query that created the slot. Only `frame_begin` running first saved
+    it; any future caller would have found a key that silently did nothing.
+  - **Both brackets held disarmed the ladder.** The guard was `up + down > 0`
+    while the change is `up - down`, so holding `[` and `]` together set
+    `ladder_manual` several times a second on a change of exactly zero. Now
+    guarded on `up != down`.
+  - The overflow path cannot cache, so it is not idempotent; the table was raised
+    to 64 slots against ~20 keys in use, and the trade is stated where it lives.
+
+  **And two tests that could not fail.** `query_is_idempotent_within_a_frame` ran
+  its whole loop *inside* the 0.35 s delay, so every count was 0 and its three
+  assertions compared zero to zero — two mutations that broke the cache outright
+  survived it. `profile_change_keeps_the_hold` asserted two struct fields and
+  never that a repeat came out, so it passed on the wedge above. Both now assert
+  a repeat actually happens, and the idempotency test fails if it ever drifts
+  back inside the delay. Every fix above is pinned by a mutation that the suite
+  now catches.
+- [~] **Story 6.24 — Show only the stems a song actually has (issue #1).**
+  *(Declined — keep all six rows.)* The complaint was real: the mixer shows a
+  PIANO row for every song, and none of the library's rock and metal has a
+  keyboard on it, so that fader does nothing.
+
+  **Why there is no list to read.** `htdemucs_6s` is a neural net with a *fixed*
+  six-output head — vocals, drums, bass, guitar, piano, other. It does not detect
+  instruments and cannot decline to emit one. A song with no piano still gets a
+  piano file, holding whatever the piano head made of the bleed. So nothing in
+  the separator's output distinguishes "the piano part" from "the model's
+  leftovers", and "display the actual created stems" would change nothing: all
+  six are always created.
+
+  **So it would have to be measured, and the measurement is not free.** Across
+  the library, real parts sit at -19 to -34 dBFS and empty ones at -45 to -82,
+  which looks like an easy cut until you look at the edges. The tightest real
+  pair is 2 dB apart and on opposite sides of the call: `02-friends-track-no-
+  vocal` is an instrumental whose absent vocal reads -43.8, and `02-not-of-this-
+  world`'s absent piano reads -45.7. Full-song RMS also punishes any instrument
+  that plays in one section — a 30-second piano part in a 5-minute song averages
+  10 dB down and would disappear, which is precisely the fader you went looking
+  for. And `other` is not a junk drawer: it carries the strings at -28.4 in
+  `02-friends` and nothing at -51.5 in `01-immigrant-song`, so the rule cannot be
+  per-stem, only per-song.
+
+  A working version was drafted (a percentile of 1-second window levels, gated on
+  both an absolute floor and a distance below the song's loudest stem, so
+  mastering level drops out) and it is not the hard part. The hard part is that
+  every threshold has a false-negative side, and its failure mode is the bad one:
+  a stem you cannot see is a stem you cannot un-mute. Six always-present rows,
+  one of which is sometimes idle, is a smaller cost than an occasionally missing
+  control — so the six stay. Revisit if a song ever turns up where the dead rows
+  actually get in the way.
+
 ## Epic 7 — Multi-platform distribution
 
 **Why now:** the goal changed from "runs on my machine" to "someone else can use

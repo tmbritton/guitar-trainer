@@ -294,7 +294,7 @@ importing_draw :: proc(name: string) {
 		ui_text("separating stems - this can take a while", 40, 260, 18, UI_DIM)
 	case .Done:
 		ui_text(
-			queue_active() ? "added — starting the next one" : "done — added to your library",
+			queue_active() ? "added - starting the next one" : "done - added to your library",
 			40,
 			260,
 			20,

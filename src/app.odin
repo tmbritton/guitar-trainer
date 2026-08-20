@@ -15,6 +15,7 @@ import "core:time"
 import rl "vendor:raylib"
 
 import "clock"
+import "keyrepeat"
 import "menu"
 import "sections"
 import "songlib"
@@ -60,6 +61,39 @@ g_main_labels: [len(g_main_entries)]cstring
 @(init)
 main_labels_init :: proc "contextless" () {
 	for e, i in g_main_entries do g_main_labels[i] = e.label
+}
+
+// ---- held-key auto-repeat ----
+//
+// Repeat is for controls that *step* a continuous value — a level, the transport
+// position, a tone knob, a list cursor. Toggles and cycles (M, S, G, D, B, N, K,
+// T) deliberately do not repeat: auto-firing a toggle just flickers it. DELETE
+// must never repeat at all, since holding it half a second would take every
+// practice section with it.
+//
+// The state table is a package-scope global rather than a field on some screen
+// struct because the same keys are shared across screens (UP/DOWN drive the
+// menu, the library, the browser and the mixer) and only one screen runs per
+// frame, so one table is exactly one key's worth of state.
+@(private = "file")
+g_repeats: keyrepeat.Table
+
+// key_repeats reports how many times `key`'s action should fire this frame: 1 on
+// the press, then 0 until the hold delay elapses, then one per repeat interval.
+// Safe to call more than once per key per frame — see keyrepeat.query.
+//
+// `profile` is a keyrepeat timing constant: FAST for list cursors, levels and
+// tone knobs; SEEK for the transport and the speed control, whose steps are
+// coarse and, in the stretcher's case, expensive.
+key_repeats :: proc(key: rl.KeyboardKey, profile := keyrepeat.FAST) -> int {
+	return keyrepeat.query(
+		&g_repeats,
+		i32(key),
+		profile,
+		rl.IsKeyPressed(key),
+		rl.IsKeyDown(key),
+		rl.GetFrameTime(),
+	)
 }
 
 run_app :: proc() {
@@ -119,7 +153,7 @@ run_app :: proc() {
 	defer drill_destroy(&d)
 
 	calib_buf: [96]u8
-	calib_status := "not calibrated — press C"
+	calib_status := "not calibrated - press C"
 	show_progress := false
 
 	// import / library screen state
@@ -171,6 +205,9 @@ run_app :: proc() {
 	preroll_step := 0
 
 	screen := Screen.Main_Menu
+	// The screen as of the end of the previous frame, so a change made by a key
+	// handler can be noticed at the top of the next one. See the reset below.
+	last_screen := screen
 	main_menu := Menu_Widget {
 		title = "GUITAR TRAINER",
 		items = g_main_labels[:],
@@ -178,6 +215,17 @@ run_app :: proc() {
 
 	for !rl.WindowShouldClose() {
 		frame_begin()
+
+		// A key held across a screen change must not keep repeating on the new
+		// screen. UP/DOWN drive the menu, the library, the browser and the mixer
+		// alike, so scrolling the library and pressing ENTER without lifting the
+		// finger would otherwise arrive at the player with the hold already past
+		// its delay and jump the stem selector several rows. ENTER meant "open
+		// this", not "and keep scrolling whatever is there next".
+		if screen != last_screen {
+			keyrepeat.reset(&g_repeats)
+			last_screen = screen
+		}
 
 		// Drag-drop import: dropping an audio file anywhere starts the same import
 		// flow as the file browser (unless an import is already running).
@@ -262,7 +310,11 @@ run_app :: proc() {
 				for c := rl.GetCharPressed(); c != 0; c = rl.GetCharPressed() {
 					browser_path_char(&browser, c)
 				}
-				if rl.IsKeyPressed(.BACKSPACE) do browser_path_backspace(&browser)
+				// A pasted NAS path is 60-odd characters; erasing it one tap per
+				// character is the problem this whole story is about.
+				if n := key_repeats(.BACKSPACE); n > 0 {
+					for _ in 0 ..< n do browser_path_backspace(&browser)
+				}
 				if rl.IsKeyPressed(.V) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 					for c in string(rl.GetClipboardText()) do browser_path_char(&browser, c)
 				}
@@ -270,14 +322,18 @@ run_app :: proc() {
 				if rl.IsKeyPressed(.ESCAPE) do browser.mode = .Browse
 
 			case .Places:
-				if rl.IsKeyPressed(.DOWN) do browser.place_sel = menu.move(browser.place_sel, len(browser.places), 1)
-				if rl.IsKeyPressed(.UP) do browser.place_sel = menu.move(browser.place_sel, len(browser.places), -1)
+				if n := key_repeats(.DOWN); n > 0 do browser.place_sel = menu.move(browser.place_sel, len(browser.places), n)
+				if n := key_repeats(.UP); n > 0 do browser.place_sel = menu.move(browser.place_sel, len(browser.places), -n)
 				if rl.IsKeyPressed(.ENTER) do browser_places_enter(&browser)
 				if rl.IsKeyPressed(.ESCAPE) do browser.mode = .Browse
 
 			case .Browse:
-				if rl.IsKeyPressed(.DOWN) do browser_move(&browser, 1)
-				if rl.IsKeyPressed(.UP) do browser_move(&browser, -1)
+				if n := key_repeats(.DOWN); n > 0 do browser_move(&browser, n)
+				if n := key_repeats(.UP); n > 0 do browser_move(&browser, -n)
+				// Deliberately does NOT repeat, unlike the path field's BACKSPACE
+				// above: this one jumps a whole directory level, and even at the
+				// slow profile a held key would shoot past the root before you
+				// could read where you were.
 				if rl.IsKeyPressed(.BACKSPACE) do browser_up(&browser)
 				if rl.IsKeyPressed(.P) do browser_open_places(&browser)
 				if rl.IsKeyPressed(.L) do browser_path_begin(&browser)
@@ -294,7 +350,7 @@ run_app :: proc() {
 					} else {
 						// Everything marked is already in the library — say so,
 						// or the keypress looks like it was dropped.
-						browser_set_status(&browser, "already imported — nothing to do")
+						browser_set_status(&browser, "already imported - nothing to do")
 					}
 				}
 				if rl.IsKeyPressed(.ENTER) {
@@ -327,8 +383,8 @@ run_app :: proc() {
 			}
 
 		case .Library:
-			if rl.IsKeyPressed(.DOWN) do library_view_move(&lib, 1)
-			if rl.IsKeyPressed(.UP) do library_view_move(&lib, -1)
+			if n := key_repeats(.DOWN); n > 0 do library_view_move(&lib, n)
+			if n := key_repeats(.UP); n > 0 do library_view_move(&lib, -n)
 			if rl.IsKeyPressed(.ENTER) {
 				// ENTER descends Artist -> Album -> Song; only the Song level
 				// yields a song to load.
@@ -398,7 +454,9 @@ run_app :: proc() {
 						name_len += 1
 					}
 				}
-				if rl.IsKeyPressed(.BACKSPACE) && name_len > 0 do name_len -= 1
+				// Backspace repeats like any text field would; the other keys in
+				// this modal (ENTER, ESC) must not.
+				if n := key_repeats(.BACKSPACE); n > 0 do name_len = max(0, name_len - n)
 				if rl.IsKeyPressed(.ESCAPE) {
 					naming, name_len = false, 0
 				}
@@ -517,22 +575,32 @@ run_app :: proc() {
 			}
 
 			if rl.IsKeyPressed(.SPACE) do player_toggle()
-			if rl.IsKeyPressed(.RIGHT) do player_seek(player_cursor() + 5 * SR)
-			if rl.IsKeyPressed(.LEFT) do player_seek(player_cursor() - 5 * SR)
-			if rl.IsKeyPressed(.DOWN) do player_sel = menu.move(player_sel, 6, 1)
-			if rl.IsKeyPressed(.UP) do player_sel = menu.move(player_sel, 6, -1)
-			if rl.IsKeyPressed(.EQUAL) || rl.IsKeyPressed(.KP_ADD) {
-				player_set_level(player_sel, player_ctl(player_sel).level + 0.05)
+			// Seeking is one accumulated jump, not N separate ones: each
+			// player_seek is a producer round-trip (clear the stretcher, refill
+			// the ring), so firing eight of them on a stalled frame would stutter
+			// where one jump of the same distance is seamless.
+			if n := key_repeats(.RIGHT, keyrepeat.SEEK); n > 0 do player_seek(player_cursor() + n * 5 * SR)
+			if n := key_repeats(.LEFT, keyrepeat.SEEK); n > 0 do player_seek(player_cursor() - n * 5 * SR)
+			if n := key_repeats(.DOWN); n > 0 do player_sel = menu.move(player_sel, 6, n)
+			if n := key_repeats(.UP); n > 0 do player_sel = menu.move(player_sel, 6, -n)
+			if n := key_repeats(.EQUAL) + key_repeats(.KP_ADD); n > 0 {
+				player_set_level(player_sel, player_ctl(player_sel).level + f32(n) * 0.05)
 			}
-			if rl.IsKeyPressed(.MINUS) || rl.IsKeyPressed(.KP_SUBTRACT) {
-				player_set_level(player_sel, player_ctl(player_sel).level - 0.05)
+			if n := key_repeats(.MINUS) + key_repeats(.KP_SUBTRACT); n > 0 {
+				player_set_level(player_sel, player_ctl(player_sel).level - f32(n) * 0.05)
 			}
 			if rl.IsKeyPressed(.M) do player_toggle_mute(player_sel)
 			if rl.IsKeyPressed(.S) do player_toggle_solo(player_sel)
-			if rl.IsKeyPressed(.LEFT_BRACKET) || rl.IsKeyPressed(.RIGHT_BRACKET) {
-				player_set_speed(
-					player_speed() + (rl.IsKeyPressed(.RIGHT_BRACKET) ? 0.05 : -0.05),
-				)
+			// Both keys are queried unconditionally rather than short-circuited:
+			// a key's hold clock only advances on the frames it is asked about,
+			// so skipping one because the other fired would stall its repeat.
+			// `up != down`, not `up + down > 0`: holding both brackets cancels to
+			// a zero change, and firing that would still mark the tempo as
+			// manually taken and disarm the ladder for the rest of the session —
+			// from a key combination that visibly does nothing.
+			if up, down := key_repeats(.RIGHT_BRACKET, keyrepeat.SEEK), key_repeats(.LEFT_BRACKET, keyrepeat.SEEK);
+			   up != down {
+				player_set_speed(player_speed() + f32(up - down) * 0.05)
 				// You decide when you are ready — you can hear it and the app
 				// cannot. A manual nudge stops the ladder for this arming and
 				// becomes the section's remembered speed.
@@ -543,15 +611,15 @@ run_app :: proc() {
 			}
 			// live-monitor rig controls
 			if rl.IsKeyPressed(.G) do audio_monitor_enable(!audio_monitor_on())
-			if rl.IsKeyPressed(.NINE) do audio_set_monitor_level(clamp(audio_monitor_level() - 0.05, 0, 1))
-			if rl.IsKeyPressed(.ZERO) do audio_set_monitor_level(clamp(audio_monitor_level() + 0.05, 0, 1))
-			if rl.IsKeyPressed(.COMMA) do audio_set_monitor_drive(clamp(audio_monitor_drive() - 0.25, 0.5, 8))
-			if rl.IsKeyPressed(.PERIOD) do audio_set_monitor_drive(clamp(audio_monitor_drive() + 0.25, 0.5, 8))
+			if n := key_repeats(.NINE); n > 0 do audio_set_monitor_level(clamp(audio_monitor_level() - f32(n) * 0.05, 0, 1))
+			if n := key_repeats(.ZERO); n > 0 do audio_set_monitor_level(clamp(audio_monitor_level() + f32(n) * 0.05, 0, 1))
+			if n := key_repeats(.COMMA); n > 0 do audio_set_monitor_drive(clamp(audio_monitor_drive() - f32(n) * 0.25, 0.5, 8))
+			if n := key_repeats(.PERIOD); n > 0 do audio_set_monitor_drive(clamp(audio_monitor_drive() + f32(n) * 0.25, 0.5, 8))
 			if rl.IsKeyPressed(.B) do audio_set_monitor_cab((audio_monitor_cab() + 1) % (audio_monitor_cab_count() + 1))
-			if rl.IsKeyPressed(.Z) do adjust_monitor_tone(-1, 0)
-			if rl.IsKeyPressed(.X) do adjust_monitor_tone(1, 0)
-			if rl.IsKeyPressed(.C) do adjust_monitor_tone(0, -1)
-			if rl.IsKeyPressed(.V) do adjust_monitor_tone(0, 1)
+			if n := key_repeats(.Z); n > 0 do adjust_monitor_tone(f32(-n), 0)
+			if n := key_repeats(.X); n > 0 do adjust_monitor_tone(f32(n), 0)
+			if n := key_repeats(.C); n > 0 do adjust_monitor_tone(0, f32(-n))
+			if n := key_repeats(.V); n > 0 do adjust_monitor_tone(0, f32(n))
 			if rl.IsKeyPressed(.D) do audio_set_monitor_dry(!audio_monitor_dry())
 			if rl.IsKeyPressed(.L) {
 				// Clearing or re-marking the loop leaves an armed section
@@ -640,6 +708,10 @@ run_app :: proc() {
 // with no regression coverage at all, since a headless test can never enter
 // run_app's loop.
 frame_begin :: proc() {
+	// Open a new auto-repeat frame before any handler asks about a key, so a
+	// key queried by two call sites gets one clock tick and one answer.
+	keyrepeat.next_frame(&g_repeats)
+
 	// Odin's temp allocator is a growing arena — it reclaims nothing until
 	// something frees it. Draw code formats a dozen strings a frame, so without
 	// this the process grows for as long as the window is open. Safe because
@@ -675,9 +747,9 @@ Menu_Widget :: struct {
 
 // menu_input handles up/down and returns the activated index on Enter, else -1.
 menu_input :: proc(m: ^Menu_Widget) -> int {
-	if rl.IsKeyPressed(.DOWN) do m.sel = menu.move(m.sel, len(m.items), 1)
-	if rl.IsKeyPressed(.UP) do m.sel = menu.move(m.sel, len(m.items), -1)
-	if rl.IsKeyPressed(.ENTER) do return m.sel
+	if n := key_repeats(.DOWN); n > 0 do m.sel = menu.move(m.sel, len(m.items), n)
+	if n := key_repeats(.UP); n > 0 do m.sel = menu.move(m.sel, len(m.items), -n)
+	if rl.IsKeyPressed(.ENTER) do return m.sel // never repeats: it activates the row
 	return -1
 }
 
