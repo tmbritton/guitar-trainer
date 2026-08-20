@@ -1,9 +1,12 @@
 package main
 
 // The interactive application: `run_app` is a keyboard-driven screen router
-// (Main Menu -> Play a Song / Import / Practice Drill / Settings / Quit). It
-// owns the window, the fullscreen render-texture/letterbox path, and the
-// audio/store/drill lifecycles. Per-screen HUD drawing lives in drill_view.odin.
+// (Main Menu -> Play a Song / Import / Settings / Quit). It owns the window, the
+// render-texture/letterbox path, and the audio/store/drill lifecycles.
+// Per-screen HUD drawing lives in drill_view.odin / player_view.odin.
+//
+// The drill is still built and still tested, but it is no longer on the menu —
+// see Story 6.21. Its screen, state machine and self-tests are all intact.
 
 import "core:fmt"
 import "core:os"
@@ -16,6 +19,48 @@ import "menu"
 import "sections"
 import "songlib"
 import "store"
+
+// ---- the main menu ----
+//
+// At package scope so `--screenshot menu` photographs the real menu rather than
+// its own copy of it, which would keep looking right after the real one changed.
+//
+// Label and action live in **one struct per row**, not two parallel arrays. The
+// switch used to be on the raw index `menu_input` returns, so removing "Practice
+// Drill" shifted Settings from 3 to 2 and Quit from 4 to 3 with nothing to catch
+// a slip. Parallel arrays plus a length `#assert` was the first fix and was not
+// enough: it catches a *count* mismatch but not a *reordering*, so swapping two
+// labels alone still compiled into a menu whose highlighted row opened something
+// else. Pairing them makes that unrepresentable, and the switch's exhaustiveness
+// covers the other direction (a new action with no case is a compile error).
+Main_Action :: enum {
+	Play_Song,
+	Import_Song,
+	Settings,
+	Quit,
+}
+
+Main_Entry :: struct {
+	label:  cstring,
+	action: Main_Action,
+}
+
+g_main_entries := [?]Main_Entry {
+	{"Play a Song", .Play_Song},
+	{"Import Song", .Import_Song},
+	{"Settings", .Settings},
+	{"Quit", .Quit},
+}
+
+// Menu_Widget speaks cstring, so the labels are unpacked once at startup rather
+// than rebuilt at each use — two loops in two files is the drift this whole
+// arrangement exists to prevent.
+g_main_labels: [len(g_main_entries)]cstring
+
+@(init)
+main_labels_init :: proc "contextless" () {
+	for e, i in g_main_entries do g_main_labels[i] = e.label
+}
 
 run_app :: proc() {
 	// NOTE: We deliberately do NOT call rl.InitAudioDevice(). Audio is owned by
@@ -126,10 +171,9 @@ run_app :: proc() {
 	preroll_step := 0
 
 	screen := Screen.Main_Menu
-	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
 	main_menu := Menu_Widget {
 		title = "GUITAR TRAINER",
-		items = main_items[:],
+		items = g_main_labels[:],
 	}
 
 	for !rl.WindowShouldClose() {
@@ -160,19 +204,19 @@ run_app :: proc() {
 		// ---- update the current screen ----
 		switch screen {
 		case .Main_Menu:
-			switch menu_input(&main_menu) {
-			case 0:
-				library_view_reload(&lib, library_root())
-				screen = .Library
-			case 1:
-				browser_open(&browser, start_dir)
-				screen = .Import
-			case 2:
-				screen = .Drill
-			case 3:
-				screen = .Settings
-			case 4:
-				return
+			if chosen := menu_input(&main_menu); chosen >= 0 {
+				switch g_main_entries[chosen].action {
+				case .Play_Song:
+					library_view_reload(&lib, library_root())
+					screen = .Library
+				case .Import_Song:
+					browser_open(&browser, start_dir)
+					screen = .Import
+				case .Settings:
+					screen = .Settings
+				case .Quit:
+					return
+				}
 			}
 			if rl.IsKeyPressed(.ESCAPE) do return
 

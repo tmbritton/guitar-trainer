@@ -73,6 +73,8 @@ unchanged by the layout.
 src/
   main.odin        entry point + command-line dispatch
   app.odin         run_app: the keyboard-driven screen router + menu widget
+                   (Play a Song / Import / Settings / Quit; the drill is off the
+                    menu as of Story 6.21 but still built and still tested)
   drill.odin       drill state machine (Idle→Prep→Listen→Confirm→Fb_Prep→Feedback)
   drill_view.odin  drill HUD + progress-panel rendering (pure view)
   import.odin      song-import worker (spawn separate.py, read progress pipe)
@@ -393,9 +395,24 @@ export WAV + timing).
 
 ## Status
 
-M0 (audio spine), M1 (pitch), and M2 (v0 scale-degree drill) are code-complete
-and tested — the drill is playable end to end (`run_app`) and logs to
-`trials.db`. Hardware-gated acceptance (<10 ms offset-corrected pick attack, real
-acoustic calibration, plucked-note accuracy, and the M3 three-weeks-daily-use
-gate) awaits a class-compliant USB Hi-Z interface — not yet purchased; onboard
-audio + software loopback are used for development.
+**The stem play-along is the product** (Epic 6). Import a song, mix/slow/loop it,
+and play the turned-down part yourself.
+
+The **ear-training drill** (Epics 0-4) is code-complete and still fully tested,
+but is **off the main menu** as of Story 6.21 and no longer the direction:
+playing along with real songs proved far more fun. Its code, screen and five
+self-tests are all intact, so restoring the menu entry is three small edits (a
+row in `g_main_entries`, a `Main_Action` member, a router `case`) — don't delete
+`drill.odin` / `drill_view.odin` / `game/` / `music/` on the assumption it is
+dead. Note the **Settings screen's tone and calibration controls now change
+nothing you can hear**: they feed the drill's offline NAM render, not the
+play-along's `ampchain` monitor. That is Story 6.22's problem, not a bug.
+
+The M3 three-weeks-daily-use gate (Story 4.2) and Epic 5,
+which it gated, are parked with it.
+
+Hardware-gated acceptance (<10 ms offset-corrected pick attack, real acoustic
+calibration, plucked-note accuracy) still awaits a class-compliant USB Hi-Z
+interface — not yet purchased; onboard audio + software loopback are used for
+development. The live-monitoring path (6.5) and the Rocksmith cable routing (6.6)
+have only ever run over loopback.

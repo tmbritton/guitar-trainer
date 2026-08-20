@@ -19,7 +19,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "naming" || a == "ended" || a == "settings" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "menu" || a == "library" || a == "loading" || a == "player" || a == "naming" || a == "ended" || a == "settings" {
 			which = a
 		}
 	}
@@ -107,6 +107,17 @@ screenshot :: proc() {
 		}
 		rl.TakeScreenshot("gt_fullscreen.png")
 		fmt.println("wrote gt_fullscreen.png")
+	case "menu":
+		// Renders the app's own g_main_labels. An earlier version rebuilt the
+		// list here, which made the capture useless: it would have gone on
+		// photographing four tidy entries after someone added a fifth to the
+		// real menu.
+		g_shot_menu = Menu_Widget {
+			title = "GUITAR TRAINER",
+			items = g_main_labels[:],
+		}
+		shot_frame(proc() {menu_draw(&g_shot_menu)}, "gt_menu.png")
+		fmt.println("wrote gt_menu.png")
 	case "settings":
 		shot_frame(proc() {settings_draw(true, "offset 12 samples (0.25 ms)")}, "gt_settings.png")
 		fmt.println("wrote gt_settings.png")
@@ -281,6 +292,8 @@ screenshot :: proc() {
 	}
 }
 
+@(private = "file")
+g_shot_menu: Menu_Widget
 @(private = "file")
 g_shot_sections: []sections.Section
 @(private = "file")

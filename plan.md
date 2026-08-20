@@ -258,30 +258,30 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   rewinds — and that ordinary mid-song pause/resume still carries on from where
   it was rather than rewinding. Confirmed failing before the fix, 80 clean runs
   after.)* Play at the end of a song should start it over.
-- [ ] **Story 6.21 — Remove Practice Drill from the main menu.** The stem
-  play-along is the project now; the drill is no longer something to offer on the
-  way in. Drop the `"Practice Drill"` item from `main_items` (`app.odin:129`) and
-  its `case 2` route to `screen = .Drill`.
-  **Keep the drill code and its self-tests** rather than deleting them — the menu
-  entry is one line and one route, while `drill.odin` / `drill_view.odin` / the
-  `game` and `music` packages / the `store` trial log / `render.odin`'s NAM path
-  are a lot of working, tested machinery. Removing the door is reversible;
-  removing the rooms is not. `--drillcheck`, `--drillsim`, `--drillabandoncheck`,
-  `--rigdrillcheck` and `--progresscheck` should all keep passing untouched, and
-  `drill_init`/`drill_destroy` can stay in `run_app` (they are cheap) or move
-  behind the self-tests.
-  Loose ends to handle in the same pass: the drag-drop handler's
-  `if screen == .Drill do drill_abandon(&d)` guard (`app.odin:150`) becomes dead
-  but harmless; the file header comment naming the drill as a menu destination
-  (`app.odin:4`) needs updating; and `CLAUDE.md` still describes the drill as
-  "one menu entry".
-  **This is a direction change, not a menu edit** — decided 2026-08-20, on the
-  evidence of actually using it: *playing along with real songs is far more fun
-  than the drill.* Story 4.2 (three weeks of daily drill use) and all of Epic 5,
-  which it gates, are parked accordingly; Epic 6's header line about the drill
-  staying as one menu entry is corrected. The drill code stays in the tree and
-  under test, so this is reversible — but it is no longer the product.
-
+- [x] **Story 6.21 — Remove Practice Drill from the main menu.** *(The stem
+  play-along is the project now — playing along with real songs turned out to be
+  far more fun than drilling scale degrees. **Removed the door, not the rooms**:
+  the menu entry was one line and one route, while `drill.odin`,
+  `drill_view.odin`, the `game`/`music` packages, the `store` trial log and
+  `render.odin`'s NAM path are a lot of working, tested machinery, and `music` is
+  general-purpose besides. All five drill self-tests (`--drillcheck`,
+  `--drillsim`, `--drillabandoncheck`, `--rigdrillcheck`, `--progresscheck`) pass
+  untouched — that is the acceptance criterion for "kept the code", and the
+  reason putting the entry back is a one-line change. Took the opportunity to
+  kill the fragility the removal exposed: the menu switched on the raw index from
+  `menu_input`, so deleting an item silently shifted Settings from `case 3` to
+  `case 2` and Quit from `4` to `3`, with nothing to catch a slip. Label and
+  action now live in one struct per row at package scope, so a wrong pairing is a
+  single visibly-wrong line rather than a mismatch between two arrays in
+  different places, and a new action with no `case` is a compile error. Review
+  caught that the first attempt — parallel arrays plus a length `#assert` — was
+  not enough (it catches a count mismatch but not a *reordering*: swapping two
+  labels alone still compiled into a menu whose highlighted row opened something
+  else), and that the new `--screenshot menu` case was worthless because it built
+  its own copy of the list and would have kept photographing four tidy entries
+  after someone added a fifth. Restoring the drill entry is three edits, not the
+  one line first claimed.)* Take the drill off the main menu; keep it built and
+  tested.
 - [ ] **Story 6.22 — In-app amps and cabs: revisit once the interface arrives.**
   Placeholder, deliberately unspecified. The requirements come from playing
   through a real Hi-Z input; writing them before that is guessing, and guessing is
@@ -305,6 +305,17 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   Also unverified until the interface lands: the whole live-monitoring path
   (Story 6.5) has only ever run over software loopback, and the Rocksmith cable's
   input-only device binding (6.6) is a plug-in-and-listen gate.
+  **Inherited from Story 6.21, and part of this decision:** the Settings screen
+  still presents a rig and a calibration that nothing reachable consumes.
+  `sf_render_seq` is called only from `render.odin` (drill) and `riff.odin`, and
+  the calibration offset is read only by `drill.odin` — so `F`/`V`/`B`/`I`/`N`/`A`
+  and `C` change a label while the play-along's monitor path (`ampchain`) ignores
+  every one of them. Press `N`, see "clean DI -> Laney GH100S -> cab Cab A", play
+  a song, hear no difference. Either those controls should drive the play-along's
+  tone (which is the interesting version, and depends on whether NAM can run in
+  the callback) or they should come off the screen. Same cause: startup loads
+  `electric.sf2` (9 MB), `clean.sf2` and a `.nam` for the parked drill, and
+  `drill_init` spawns a render worker that polls forever with no possible job.
 
 ## Epic 7 — Multi-platform distribution
 
