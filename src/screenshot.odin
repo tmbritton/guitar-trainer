@@ -91,7 +91,10 @@ screenshot :: proc() {
 		tgt := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
 		defer rl.UnloadRenderTexture(tgt)
 		rl.SetTextureFilter(tgt.texture, .POINT)
-		for _ in 0 ..< 2 {
+		// 8 frames, matching shot_frame: TakeScreenshot reads back the buffer the
+		// compositor last presented, which lags the draw — with only two warm-up
+		// frames the capture comes out all-black.
+		for _ in 0 ..< 8 {
 			rl.BeginTextureMode(tgt)
 			rl.ClearBackground(UI_BG)
 			drill_draw(g_shot_drill, true, true)

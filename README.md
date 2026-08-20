@@ -50,7 +50,9 @@ See [`docs/product-sketch.md`](docs/product-sketch.md) for the design rationale,
 - **Delayed, auditory feedback** — no per-note green/red screen-watching.
 - Logs every trial to a local SQLite file with a **progress** view.
 
-Fullscreen and distraction-free; a keyboard-driven menu ties it together.
+Distraction-free and keyboard-driven; a simple menu ties it together. It runs
+in an ordinary window — make it fullscreen with your window manager if you want
+to shut everything else out.
 
 ## Requirements
 
@@ -116,7 +118,7 @@ mise run check-python   # prints demucs/torch versions + whether CUDA is on
 #    few minutes. Later builds are fast.
 ./build.sh
 
-# 4. Run (launches fullscreen).
+# 4. Run.
 ./guitar-trainer
 ```
 

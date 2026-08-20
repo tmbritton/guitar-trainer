@@ -146,9 +146,17 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   - **A section list in the player** — cycle/select, showing markers for all of
     them on the seek bar rather than just the armed pair.
   - **Practice affordances** on the armed section, which is the actual point:
-    a repetition counter, a count-in before each pass, and a **speed ladder**
-    (start at 0.5x and step up toward 1.0 every N clean passes) using the
-    SoundTouch stretcher already in the producer.
+    a repetition counter and a count-in before each pass.
+  - **Speed stays manual by default.** `[`/`]` already control speed (0.5–1.25),
+    and that is the primary way to work a passage up — you decide when you're
+    ready, because you can hear it and the app can't. Persist the per-section
+    speed so re-arming a section returns you to the tempo you were working at.
+  - **An optional speed ladder**, off unless explicitly enabled: step toward 1.0
+    every N passes, using the SoundTouch stretcher already in the producer.
+    Opt-in per section, and a manual `[`/`]` nudge while it's running takes over
+    (the ladder should never fight the user for control of the tempo).
   Keep the frame math in the player (loop points are already atomics read by the
   producer) and the persistence pure, so a headless check can assert that a saved
-  section round-trips and that the ladder advances.
+  section round-trips, that per-section speed restores, and that the ladder
+  advances only when it is switched on.
+- [x] **Story 6.17 — Run in a window (drop forced fullscreen).** *(`run_app` no longer calls `ToggleBorderlessWindowed()` or `HideCursor()` — the app opens as an ordinary resizable window, and fullscreen is left to the window manager, which already does it well. Forcing it took over the machine while a multi-hour batch import ran, and made the pointer unusable. `SetConfigFlags({.WINDOW_RESIZABLE})` moved above `InitWindow` (flags set afterwards are ignored) and a minimum size of 400x240 keeps the text readable. Almost no layout work was needed: every screen already renders into a fixed 800x480 texture that `blit_fit` scales and letterboxes to the current window each frame — verified by the `fullscreen` screenshot, which blits into a 1280x600 window with correct side bars. Fullscreen is no longer a stated design goal; README updated.)* Stop forcing fullscreen; run in a normal resizable window.

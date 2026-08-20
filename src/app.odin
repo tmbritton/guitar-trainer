@@ -19,14 +19,17 @@ import "store"
 run_app :: proc() {
 	// NOTE: We deliberately do NOT call rl.InitAudioDevice(). Audio is owned by
 	// a single duplex ma_device (see audio.odin), per the architecture rules.
+	// Must precede InitWindow — config flags set afterwards are ignored.
+	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(WINDOW_W, WINDOW_H, "Guitar Trainer")
 	defer rl.CloseWindow()
 
-	// Launch fullscreen with nothing else on screen — a practice session should
-	// have no competing UI. The drill is drawn at a fixed 800x480 into an
-	// offscreen texture, then scaled and centred (black letterbox) to the display.
-	rl.ToggleBorderlessWindowed()
-	rl.HideCursor()
+	// An ordinary window: fullscreen is the window manager's job, and forcing it
+	// took over the machine while a long import ran. Every screen is drawn at a
+	// fixed 800x480 into an offscreen texture, then scaled and centred (black
+	// letterbox) to whatever size the window is, so any size works.
+	// The cursor stays visible — you need it to move and resize the window.
+	rl.SetWindowMinSize(WINDOW_W / 2, WINDOW_H / 2) // below this the text stops being readable
 	rl.SetTargetFPS(60)
 
 	// raylib's default exit key is ESC, which would close the window from any
