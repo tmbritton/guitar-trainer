@@ -35,6 +35,11 @@ SPEED_MAX :: 1.25 // fastest
 @(private = "file") g_loop_a: i64 = -1 // atomic: A-B loop start frame (-1 = unset)
 @(private = "file") g_loop_b: i64 = -1 // atomic: A-B loop end frame (-1 = unset)
 @(private = "file") g_loop_on: u32 // atomic 0/1: loop active
+// Practice counters for a drilled section (Story 6.16). The producer owns the
+// increment — it is the only thing that knows a pass actually completed — and
+// the UI only reads and resets.
+@(private = "file") g_loop_passes: u32 // atomic: completed wraps at B
+@(private = "file") g_loop_preroll: i64 // atomic: frames of run-up before A on each wrap
 
 // player_open takes ownership of playback for `sa` (the caller still owns the
 // PCM and frees it with stems_free after player_close). Autostarts playing.
@@ -48,6 +53,7 @@ player_open :: proc(sa: Song_Audio) {
 	intrinsics.atomic_store(&g_player_cursor, 0)
 	intrinsics.atomic_store(&g_player_seek, -1)
 	player_loop_clear() // loop points are transient — start fresh per song
+	intrinsics.atomic_store(&g_loop_preroll, 0)
 	intrinsics.atomic_store(&g_player_speed, transmute(u32)f32(1))
 	intrinsics.atomic_store(&g_player_playing, 1)
 	intrinsics.atomic_store(&g_player_stop, 0)
@@ -139,7 +145,46 @@ player_loop_clear :: proc() {
 	intrinsics.atomic_store(&g_loop_on, 0)
 	intrinsics.atomic_store(&g_loop_a, -1)
 	intrinsics.atomic_store(&g_loop_b, -1)
+	intrinsics.atomic_store(&g_loop_passes, 0)
 }
+
+// player_loop_set arms an explicit span — how a saved section is loaded, as
+// against player_loop_mark's incremental A-then-B cycle. Seeks to the start so
+// the passage begins immediately rather than whenever the cursor next reaches A.
+player_loop_set :: proc(a, b: int) {
+	if b <= a || a < 0 {
+		player_loop_clear()
+		return
+	}
+	// Disable first, then move, then re-enable: the producer must never see the
+	// new span alongside the old cursor, which (past the new B) would read as a
+	// completed pass before a note has played.
+	intrinsics.atomic_store(&g_loop_on, 0)
+	player_seek(max(0, a - int(intrinsics.atomic_load(&g_loop_preroll))))
+	intrinsics.atomic_store(&g_loop_a, i64(a))
+	intrinsics.atomic_store(&g_loop_b, i64(b))
+	intrinsics.atomic_store(&g_loop_passes, 0)
+	intrinsics.atomic_store(&g_loop_on, 1) // enable last: A and B are published
+}
+
+// player_loop_passes counts completed passes of the armed span — the repetition
+// counter, and what the speed ladder advances on.
+player_loop_passes :: proc() -> int {return int(intrinsics.atomic_load(&g_loop_passes))}
+
+player_loop_reset_passes :: proc() {intrinsics.atomic_store(&g_loop_passes, 0)}
+
+// player_set_preroll gives each pass a run-up: the wrap goes to `frames` before
+// A instead of to A itself, so you hear the bar leading into the passage.
+//
+// This is the "count-in" from the plan, done as a musical pre-roll rather than a
+// click track — nothing in the import pipeline extracts a tempo, so a metronome
+// could only tick at an arbitrary rate unrelated to the music, which for a
+// timing exercise is worse than nothing.
+player_set_preroll :: proc(frames: int) {
+	intrinsics.atomic_store(&g_loop_preroll, i64(max(0, frames)))
+}
+
+player_preroll :: proc() -> int {return int(intrinsics.atomic_load(&g_loop_preroll))}
 
 player_loop_on :: proc() -> bool {return intrinsics.atomic_load(&g_loop_on) != 0}
 player_loop_a :: proc() -> int {return int(intrinsics.atomic_load(&g_loop_a))}
@@ -167,11 +212,19 @@ player_loop :: proc() {
 	out: [PLAYER_BLOCK * 4]f32 // stretched-output scratch (slowdown expands the block)
 	cur_tempo: f64 = 1.0 // tempo currently applied to the stretcher
 
+	// jumped: the cursor was repositioned and no audio has been produced from the
+	// new position yet. It has to persist across iterations rather than being a
+	// per-iteration flag — a seek taken while paused is applied on one iteration
+	// and the wrap it causes is not detected until a later one, after playback
+	// resumes.
+	jumped := false
+
 	for intrinsics.atomic_load(&g_player_stop) == 0 {
 		if s := intrinsics.atomic_load(&g_player_seek); s >= 0 {
 			intrinsics.atomic_store(&g_player_cursor, u64(s))
 			intrinsics.atomic_store(&g_player_seek, -1)
 			soundtouch.st_clear(g_stretch) // drop buffered audio from the old position
+			jumped = true
 		}
 		if intrinsics.atomic_load(&g_player_playing) == 0 {
 			time.sleep(5 * time.Millisecond)
@@ -206,9 +259,25 @@ player_loop :: proc() {
 		loop_on := intrinsics.atomic_load(&g_loop_on) != 0
 		loop_a := int(intrinsics.atomic_load(&g_loop_a))
 		loop_b := min(int(intrinsics.atomic_load(&g_loop_b)), g_player_song.frames)
-		looping := loop_on && loop_b > loop_a && loop_a >= 0
+		// A span shorter than one block cannot be produced: the stretcher is
+		// cleared on every wrap before it can emit anything, so nothing reaches
+		// the ring, the ring never fills, and none of the sleeps below are
+		// reached — a silent 100% CPU spin. player_loop_mark can create exactly
+		// such a span (both marks on one cursor, i.e. pressing L twice while
+		// paused), so refuse to loop on it rather than hang.
+		looping := loop_on && loop_a >= 0 && loop_b - loop_a >= PLAYER_BLOCK
 		if looping && cursor >= loop_b {
-			cursor = loop_a
+			// A completed pass — but only if playing got us here. A seek past B
+			// (an arrow-key scrub, or arming a section while the cursor is
+			// beyond it) also lands in this branch and must still wrap, without
+			// crediting a repetition the user did not play.
+			if intrinsics.atomic_load(&g_player_seek) < 0 && !jumped {
+				intrinsics.atomic_add(&g_loop_passes, 1)
+			}
+			jumped = true // the wrap is itself a jump: the pass starts from here
+			// Wrap to the pre-roll point, not to A, so each repetition gets its
+			// run-up. Clamped at 0 for a section that starts near the top.
+			cursor = max(0, loop_a - int(intrinsics.atomic_load(&g_loop_preroll)))
 			intrinsics.atomic_store(&g_player_cursor, u64(cursor))
 			soundtouch.st_clear(g_stretch) // drop buffered audio from the old position
 		}
@@ -249,10 +318,12 @@ player_loop :: proc() {
 		if bypass {
 			written := audio_pcm_write(block[:n])
 			intrinsics.atomic_store(&g_player_cursor, u64(cursor + written))
+			if written > 0 do jumped = false
 		} else {
 			soundtouch.st_put(g_stretch, raw_data(block[:]), u32(n)) // consumes n input frames
 			intrinsics.atomic_store(&g_player_cursor, u64(cursor + n))
 			drain_stretch(out[:])
+			jumped = false
 		}
 	}
 }

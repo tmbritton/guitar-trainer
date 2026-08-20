@@ -13,6 +13,7 @@ import rl "vendor:raylib"
 
 import "clock"
 import "menu"
+import "sections"
 import "songlib"
 import "store"
 
@@ -101,6 +102,28 @@ run_app :: proc() {
 	// feeling the async load was meant to remove.
 	pending_open: bool
 	defer stems_load_shutdown() // don't leave decode workers running on quit
+
+	// Saved practice sections for the open song (Story 6.16).
+	song_sections: [dynamic]sections.Section
+	defer sections_free(&song_sections)
+	armed := -1 // index into song_sections; -1 = nothing armed
+	ladder_manual := false // a [ / ] nudge took the ladder off the wheel
+	naming := false // the name-entry overlay owns the keyboard
+	// 32 chars is what fits the name field at its drawn size; a longer name
+	// would run off the 800px render target with nothing to clip it.
+	name_buf: [32]u8
+	name_len := 0
+	// One-line feedback under the transport, so keys that legitimately do
+	// nothing (R with no loop, N with no sections) say why instead of feeling
+	// dropped.
+	player_status_buf: [96]u8
+	player_status: string
+	set_status := proc(buf: []u8, msg: string) -> string {
+		return string(buf[:copy(buf, msg)])
+	}
+	// Pre-roll choices, in seconds of run-up before the section's A point.
+	preroll_steps := [3]f32{0, 2, 4}
+	preroll_step := 0
 
 	screen := Screen.Main_Menu
 	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
@@ -308,6 +331,11 @@ run_app :: proc() {
 					player_sel = 0
 					player_open(player_song)
 					player_set_speed(rig.speed) // after open (which resets speed to 1.0)
+					sections_free(&song_sections)
+					song_sections = sections_load(player_dir)
+					armed, ladder_manual, naming, name_len = -1, false, false, 0
+					player_status = ""
+					preroll_step = 0
 					screen = .Player
 				}
 			}
@@ -316,6 +344,134 @@ run_app :: proc() {
 
 		case .Player:
 			SR :: int(clock.SAMPLE_RATE)
+
+			// Naming a section is modal: it owns the keyboard, or every letter
+			// typed would also trigger a player shortcut (M would mute, S solo).
+			if naming {
+				for c := rl.GetCharPressed(); c != 0; c = rl.GetCharPressed() {
+					if c >= 32 && c < 127 && name_len < len(name_buf) {
+						name_buf[name_len] = u8(c)
+						name_len += 1
+					}
+				}
+				if rl.IsKeyPressed(.BACKSPACE) && name_len > 0 do name_len -= 1
+				if rl.IsKeyPressed(.ESCAPE) {
+					naming, name_len = false, 0
+				}
+				if rl.IsKeyPressed(.ENTER) {
+					typed := strings.trim_space(string(name_buf[:name_len]))
+					sec := sections.Section {
+						name   = typed,
+						a      = player_loop_a(),
+						b      = player_loop_b(),
+						speed  = player_speed(),
+						ladder = false, // opt-in, always
+					}
+					// Refuse here rather than write a section that `format`
+					// would drop and the next load would silently lose.
+					if !sections.valid(sec) {
+						player_status = set_status(
+							player_status_buf[:],
+							"needs a name and a span of at least 0.1s",
+						)
+					} else {
+						sec.name = strings.clone(typed)
+						append(&song_sections, sec)
+						armed = len(song_sections) - 1
+						ladder_manual = false
+						if !sections_save(player_dir, song_sections[:]) {
+							player_status = set_status(
+								player_status_buf[:],
+								"could not write sections.txt",
+							)
+						}
+						naming, name_len = false, 0
+					}
+				}
+				break // no other player input while the field is open
+			}
+
+			// Arming a section: cycle through them and then back to none, so the
+			// same key both selects and disarms.
+			if rl.IsKeyPressed(.N) {
+				if len(song_sections) == 0 {
+					player_status = set_status(
+						player_status_buf[:],
+						"no sections yet - mark a span with L, then R",
+					)
+				} else {
+					armed = armed + 1 >= len(song_sections) ? -1 : armed + 1
+					ladder_manual = false
+					player_status = ""
+					if armed >= 0 {
+						sec := song_sections[armed]
+						player_loop_set(sec.a, sec.b)
+						player_set_speed(sec.speed) // back to the tempo you were working at
+					} else {
+						player_loop_clear()
+					}
+				}
+			}
+			// Save the current A-B span as a named section.
+			if rl.IsKeyPressed(.R) {
+				switch {
+				case !player_loop_on():
+					player_status = set_status(
+						player_status_buf[:],
+						"mark a span with L first",
+					)
+				case len(song_sections) >= sections.MAX:
+					player_status = set_status(
+						player_status_buf[:],
+						"section list is full",
+					)
+				case armed >= 0:
+					// The armed section already *is* this span; saving would
+					// just make a second copy under another name.
+					player_status = set_status(
+						player_status_buf[:],
+						"already saved - press N to disarm first",
+					)
+				case:
+					naming, name_len = true, 0
+					player_status = ""
+				}
+			}
+			// The ladder is per section and off unless switched on here.
+			if rl.IsKeyPressed(.K) && armed >= 0 {
+				song_sections[armed].ladder = !song_sections[armed].ladder
+				ladder_manual = false
+				player_loop_reset_passes()
+				player_set_speed(song_sections[armed].speed)
+				sections_save(player_dir, song_sections[:])
+			}
+			if rl.IsKeyPressed(.T) {
+				preroll_step = (preroll_step + 1) % len(preroll_steps)
+				player_set_preroll(int(preroll_steps[preroll_step] * clock.SAMPLE_RATE))
+			}
+			if rl.IsKeyPressed(.DELETE) {
+				if armed < 0 {
+					player_status = set_status(
+						player_status_buf[:],
+						"arm a section with N to remove it",
+					)
+				} else {
+					delete(song_sections[armed].name)
+					ordered_remove(&song_sections, armed)
+					armed = -1
+					player_loop_clear()
+					sections_save(player_dir, song_sections[:])
+					player_status = set_status(player_status_buf[:], "section removed")
+				}
+			}
+			// Drive the ladder from the pass counter the producer maintains.
+			// Skipped once the user has taken the tempo manually — the ladder
+			// must never fight them for it.
+			if armed >= 0 && !ladder_manual && song_sections[armed].ladder {
+				want := section_speed(song_sections[armed], player_loop_passes())
+				if abs(want - player_speed()) > 1e-3 do player_set_speed(want)
+			}
+
 			if rl.IsKeyPressed(.SPACE) do player_toggle()
 			if rl.IsKeyPressed(.RIGHT) do player_seek(player_cursor() + 5 * SR)
 			if rl.IsKeyPressed(.LEFT) do player_seek(player_cursor() - 5 * SR)
@@ -329,8 +485,18 @@ run_app :: proc() {
 			}
 			if rl.IsKeyPressed(.M) do player_toggle_mute(player_sel)
 			if rl.IsKeyPressed(.S) do player_toggle_solo(player_sel)
-			if rl.IsKeyPressed(.LEFT_BRACKET) do player_set_speed(player_speed() - 0.05)
-			if rl.IsKeyPressed(.RIGHT_BRACKET) do player_set_speed(player_speed() + 0.05)
+			if rl.IsKeyPressed(.LEFT_BRACKET) || rl.IsKeyPressed(.RIGHT_BRACKET) {
+				player_set_speed(
+					player_speed() + (rl.IsKeyPressed(.RIGHT_BRACKET) ? 0.05 : -0.05),
+				)
+				// You decide when you are ready — you can hear it and the app
+				// cannot. A manual nudge stops the ladder for this arming and
+				// becomes the section's remembered speed.
+				if armed >= 0 {
+					ladder_manual = true
+					song_sections[armed].speed = player_speed()
+				}
+			}
 			// live-monitor rig controls
 			if rl.IsKeyPressed(.G) do audio_monitor_enable(!audio_monitor_on())
 			if rl.IsKeyPressed(.NINE) do audio_set_monitor_level(clamp(audio_monitor_level() - 0.05, 0, 1))
@@ -343,9 +509,23 @@ run_app :: proc() {
 			if rl.IsKeyPressed(.C) do adjust_monitor_tone(0, -1)
 			if rl.IsKeyPressed(.V) do adjust_monitor_tone(0, 1)
 			if rl.IsKeyPressed(.D) do audio_set_monitor_dry(!audio_monitor_dry())
-			if rl.IsKeyPressed(.L) do player_loop_mark() // A-B loop: mark A, mark B, clear
+			if rl.IsKeyPressed(.L) {
+				// Clearing or re-marking the loop leaves an armed section
+				// describing a span that is no longer playing. Without this the
+				// HUD kept naming it and the ladder kept driving the tempo from
+				// a pass counter L had just reset — audibly dropping the speed.
+				if armed >= 0 {
+					armed = -1
+					ladder_manual = false
+					player_status = set_status(player_status_buf[:], "section disarmed")
+				}
+				player_loop_mark() // mark A, mark B, clear
+			}
 			if rl.IsKeyPressed(.ESCAPE) {
 				prefs_save(player_dir, player_snapshot_ctl(), current_rig()) // remember mix + rig + speed
+				sections_save(player_dir, song_sections[:]) // and the practice sections
+				sections_free(&song_sections)
+				armed = -1
 				audio_monitor_enable(false) // stop monitoring on the menus
 				player_close()
 				stems_free(&player_song)
@@ -376,7 +556,20 @@ run_app :: proc() {
 		case .Loading:
 			loading_draw(player_name, player_artist, pending_open)
 		case .Player:
-			player_view_draw(player_name, player_artist, player_sel)
+			player_view_draw(
+				player_name,
+				player_artist,
+				player_sel,
+				Player_Sections {
+					list = song_sections[:],
+					armed = armed,
+					passes = player_loop_passes(),
+					manual = ladder_manual,
+					naming = naming,
+					name = string(name_buf[:name_len]),
+					status = player_status,
+				},
+			)
 		}
 		rl.EndTextureMode()
 
@@ -384,6 +577,15 @@ run_app :: proc() {
 		rl.ClearBackground(rl.BLACK)
 		blit_fit(target, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight()))
 		rl.EndDrawing()
+	}
+
+	// Closing the window (X, alt-F4) exits the loop without passing through the
+	// Player screen's ESC handler, which is where per-song state is written —
+	// so a practice session ended that way used to lose its mixer, rig and
+	// sections.
+	if screen == .Player {
+		prefs_save(player_dir, player_snapshot_ctl(), current_rig())
+		sections_save(player_dir, song_sections[:])
 	}
 }
 

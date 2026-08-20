@@ -30,6 +30,9 @@ main :: proc() {
 		case "--queuecheck":
 			queuecheck()
 			return
+		case "--sectioncheck":
+			sectioncheck()
+			return
 		case "--tempcheck":
 			tempcheck()
 			return

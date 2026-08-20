@@ -86,6 +86,7 @@ src/
   player.odin      song player: producer thread mixes stems -> PCM ring; transport
   player_view.odin player screen: mixer strip + transport + rig (pure view)
   songprefs.odin   per-song mixer + rig + speed persistence (library/<song>/mixer.txt)
+  sections.odin    per-song practice sections (library/<song>/sections.txt)
   selftests.odin   headless --*check verification modes
   riff.odin        --riff / --riff-wav tone-audition modes
   screenshot.odin  --screenshot PNG capture
@@ -109,6 +110,7 @@ src/
   menu/            pure keyboard-menu navigation math       (unit-tested)
   songlib/         import protocol parse + slug + song-dir + meta.txt (unit-tested)
   places/          /proc/mounts parse -> media mount shortcuts   (unit-tested)
+  sections/        practice-section format + speed-ladder math    (unit-tested)
   pcmring/         SPSC f32 sample ring (player->callback)  (unit-tested)
   mix/             stem-mixer gain math (level/mute/solo)   (unit-tested)
   ampchain/        realtime monitor amp DSP (oversampled ws + tone + FIR cab) (unit-tested)
@@ -287,6 +289,30 @@ the callback applies; cab IRs are preloaded into fixed buffers so switching is a
 race-free atomic index. **Dry monitoring** (`D`) bypasses the amp chain — a clean
 passthrough at the monitor level for players using their own outboard amp.
 
+**Practice sections:** a marked A-B span can be **named and saved** per song
+(`sections` pkg + `sections.odin` → `library/<song>/sections.txt`, a sibling of
+mixer.txt so a corrupt section line can't cost you your mixer). `N` arms/cycles,
+`R` names the current span, `K` toggles that section's speed ladder, `T` cycles
+the pre-roll, `DEL` removes; `L` disarms (it clears the loop, so leaving a
+section armed would desync the HUD and the ladder). The producer counts a **pass** on each wrap at B — but not one caused by a seek
+(it tracks a `jumped` flag cleared only once audio has been produced from the new
+position; a seek taken while *paused* wraps on a later iteration, so a
+per-iteration flag is not enough). Spans shorter than `sections.MIN_FRAMES` are
+refused: `player_loop_mark` makes a 1-frame span when both marks land on one
+cursor, and armed at speed != 1.0 that spins a core (the stretcher is cleared
+before it can emit, so the producer never reaches a sleep).
+`sections.ladder_speed(start, passes)` is a pure function of the start speed and
+pass count (not an accumulator, so it can't drift and re-arming lands on the same
+tempo), moves toward 1.0 from either side, and is **off unless switched on**. A
+manual `[`/`]` nudge takes the tempo over for that arming and becomes the
+section's remembered speed — the ladder never fights the user for the tempo. The
+"count-in" is a **musical pre-roll** (wrap to `A - preroll`), not a click track:
+nothing extracts a tempo from an imported song, so a metronome could only tick at
+an arbitrary rate.
+
+Note **raylib's default font has no em dash** — `—` draws as `?`. The middot `·`
+is fine. Stick to ASCII punctuation in anything passed to `DrawText`/`ui_text`.
+
 **A-B loop:** `L` cycles mark-A → mark-B → clear (`player.odin`; loop points as
 atomics, transient — reset on reopen). The producer wraps the cursor back to A at
 B (like a seek: `st_clear`s the stretcher, clamps the block so it never crosses
@@ -294,9 +320,10 @@ B). **Drag-drop import:** dropping an audio file on the window (`rl.IsFileDroppe
 starts the same import flow as the browser.
 
 Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level,
-`M` mute, `S` solo, `[`/`]` speed, `L` A-B loop, `G` monitor on/off, `D` dry
+`M` mute, `S` solo, `[`/`]` speed, `L` A-B loop, `N` arm section, `R` save span,
+`K` ladder, `T` pre-roll, `DEL` remove section, `G` monitor on/off, `D` dry
 (bypass), `,`/`.` drive, `B` cab, `9`/`0` monitor level, `Z`/`X` bass, `C`/`V`
-treble, `ESC` back (saves mix + rig + speed per song).
+treble, `ESC` back (saves mix + rig + speed + sections per song).
 
 ## Audio-device selection
 
@@ -331,7 +358,10 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
 device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
-cursor inside the span and wraps at B), `loadcheck` (async
+cursor inside the span and wraps at B), `sectioncheck` (practice
+sections: round-trip through the library, arming drives the real producer loop,
+the pass counter advances, pre-roll runs up to A, the ladder advances only when
+enabled), `loadcheck` (async
 stem load: matches the sequential path, `stems_load_begin` returns without
 decoding, a cancelled load frees itself; `--loadcheck <dir>` times one real song
 both ways), `tempcheck` (temp allocator is bounded:

@@ -170,32 +170,54 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   guard armed: `-debug` `--audiocheck` / `--monitorcheck` / `--playercheck` show
   0 allocation attempts.)* Free per frame in `run_app` and scope the walk in
   `queue_expand`.
-- [ ] **Story 6.16 — Saved riff sections (practice a passage).** Story 6.7 already
-  loops a span: `L` cycles mark-A → mark-B → clear and the producer wraps at B.
-  What's missing for actually *drilling a riff* is everything around it. The loop
-  is explicitly transient — `player_open` calls `player_loop_clear()` and nothing
-  in `songprefs.odin` stores it — so the passage you set up is gone the moment you
-  leave the song, and there is only ever one anonymous region. Wanted:
-  - **Named sections persisted per song** (extend `mixer.txt`, which is already
-    tolerant of missing/short lines, or a sibling `sections.txt`): "chorus riff",
-    "solo", each with A/B frames. Pick one to arm the loop; the player's existing
-    wrap logic does the rest.
-  - **A section list in the player** — cycle/select, showing markers for all of
-    them on the seek bar rather than just the armed pair.
-  - **Practice affordances** on the armed section, which is the actual point:
-    a repetition counter and a count-in before each pass.
-  - **Speed stays manual by default.** `[`/`]` already control speed (0.5–1.25),
-    and that is the primary way to work a passage up — you decide when you're
-    ready, because you can hear it and the app can't. Persist the per-section
-    speed so re-arming a section returns you to the tempo you were working at.
-  - **An optional speed ladder**, off unless explicitly enabled: step toward 1.0
-    every N passes, using the SoundTouch stretcher already in the producer.
-    Opt-in per section, and a manual `[`/`]` nudge while it's running takes over
-    (the ladder should never fight the user for control of the tempo).
-  Keep the frame math in the player (loop points are already atomics read by the
-  producer) and the persistence pure, so a headless check can assert that a saved
-  section round-trips, that per-section speed restores, and that the ladder
-  advances only when it is switched on.
+- [x] **Story 6.16 — Saved riff sections (practice a passage).** *(Story 6.7 already
+  looped a span; what was missing was everything around it — the loop was
+  transient (`player_open` cleared it, nothing persisted it), so the passage you
+  set up vanished on leaving the song, and there was only ever one anonymous
+  region. Added identity, persistence, plurality and drill feedback, with the
+  A-B machinery itself untouched. New pure `sections` package (11 tests):
+  `Section {name, a, b, speed, ladder}`, a line format, allocation-free `parse`
+  (names are subslices, as in `songlib.parse_meta`), `format` that normalizes a
+  typed name to one line, and `ladder_speed`. Persisted in a sibling
+  `library/<song>/sections.txt`, **not** inside `mixer.txt`: that file is a
+  fixed-shape positional record and sections are a variable-length list, so
+  keeping them apart means a corrupt section line cannot cost you your mixer.
+  The producer counts a pass each time it wraps at B — it is the only thing that
+  knows a repetition completed — and `player_loop_set` arms a saved span
+  directly. Player keys: `N` arm/cycle, `R` save the current A-B span (modal
+  name field, which owns the keyboard or every letter would also fire a player
+  shortcut), `K` ladder, `T` pre-roll, `DEL` remove; markers for **every** saved
+  section on the seek bar, plus a pass counter and the ladder state. **The ladder
+  is opt-in and pure**: `ladder_speed(start, passes)` is a function of the
+  starting speed and the pass count rather than an accumulating value, so it
+  cannot drift and re-arming lands on the same tempo; it moves toward 1.0 from
+  either side and stops. A manual `[`/`]` nudge takes the tempo over for that
+  arming and becomes the section's remembered speed — the ladder must never
+  fight you for control of the tempo, because you can hear whether you are ready
+  and the app cannot. **Judgement call on the count-in:** the plan asked for a
+  click before each pass, but nothing in the import pipeline extracts a tempo, so
+  a metronome could only tick at a rate unrelated to the music — which for a
+  timing exercise is worse than nothing. It is a **musical pre-roll** instead:
+  the wrap goes to `A - preroll` so you hear the run-up into the passage, the way
+  a loop pedal does, needing no tempo. Also fixed a rendering bug the screenshots
+  caught: raylib's default font has no em dash, so `—` was drawing as `?` on the
+  Importing and Library screens too. `--sectioncheck` covers the round-trip
+  (including surviving a temp reset), arming the real producer, the pass counter,
+  the pre-roll, and the ladder advancing only when enabled. Review fixes: `L`
+  while armed desynced `armed` from the loop and let the ladder audibly yank the
+  tempo back; a seek past B credited a pass never played (the producer now tracks
+  a `jumped` flag that persists across iterations, since a seek taken while
+  paused wraps on a *later* one); a whitespace-only name was accepted, written as
+  empty and silently dropped on reload; a 1-frame span — reachable by pressing
+  `L` twice while paused — could be persisted and then **spun a core** when armed
+  at speed != 1.0, because the producer cleared the stretcher every iteration and
+  so never reached a sleep; there was no actual section list, only markers and a
+  count; and silent keys now say why. Two of my own tests were caught as weak and
+  rewritten: the pre-roll assertion was flaky (3 failures in 200 — it sampled the
+  cursor too coarsely to see a 0.25 s window) and the seek-credit test exited
+  before the wrap it was judging.)* Named, persisted
+  practice sections with a repetition counter, pre-roll, and an opt-in speed
+  ladder.
 - [x] **Story 6.17 — Run in a window (drop forced fullscreen).** *(`run_app` no longer calls `ToggleBorderlessWindowed()` or `HideCursor()` — the app opens as an ordinary resizable window, and fullscreen is left to the window manager, which already does it well. Forcing it took over the machine while a multi-hour batch import ran, and made the pointer unusable. `SetConfigFlags({.WINDOW_RESIZABLE})` moved above `InitWindow` (flags set afterwards are ignored) and a minimum size of 400x240 keeps the text readable. Almost no layout work was needed: every screen already renders into a fixed 800x480 texture that `blit_fit` scales and letterboxes to the current window each frame — verified by the `fullscreen` screenshot, which blits into a 1280x600 window with correct side bars. Fullscreen is no longer a stated design goal; README updated.)* Stop forcing fullscreen; run in a normal resizable window.
 - [x] **Story 6.18 — Song loading must not block the UI.** *(Selecting a song
   froze the app for ~2 s before the player appeared, which reads as a hang.

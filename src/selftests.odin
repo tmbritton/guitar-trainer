@@ -17,6 +17,7 @@ import "clock"
 import "detect"
 import "game"
 import "music"
+import "sections"
 import "songlib"
 import "store"
 
@@ -1671,5 +1672,215 @@ time_real_song :: proc(dir: string) {
 		seq_ms,
 		par_ms,
 		seq_ms / max(par_ms, 1),
+	)
+}
+
+// sectioncheck verifies saved practice sections (Story 6.16): they round-trip
+// through the library, arming one drives the real producer's loop, the pass
+// counter advances as the passage repeats, and the speed ladder moves only when
+// it is switched on.
+sectioncheck :: proc() {
+	dir :: "/tmp/gt_sectioncheck"
+	os.remove_all(dir)
+	defer os.remove_all(dir)
+	_ = os.make_directory_all(dir)
+
+	// --- persistence round-trip ---
+	want := []sections.Section {
+		{name = "main riff", a = 48000, b = 96000, speed = 0.75, ladder = true},
+		{name = "solo", a = 200000, b = 320000, speed = 1, ladder = false},
+	}
+	if !sections_save(dir, want) {
+		fmt.eprintln("FAIL: could not write sections.txt")
+		os.exit(1)
+	}
+	got := sections_load(dir)
+	defer sections_free(&got)
+	if len(got) != len(want) {
+		fmt.eprintfln("FAIL: loaded %d sections, want %d", len(got), len(want))
+		os.exit(1)
+	}
+	for w, i in want {
+		g := got[i]
+		if g.name != w.name || g.a != w.a || g.b != w.b || g.ladder != w.ladder {
+			fmt.eprintfln("FAIL: section %d round-trip: got %v want %v", i, g, w)
+			os.exit(1)
+		}
+		if abs(g.speed - w.speed) > 1e-3 {
+			fmt.eprintfln("FAIL: section %d speed %.3f, want %.3f", i, g.speed, w.speed)
+			os.exit(1)
+		}
+	}
+	// The names must survive the temp buffer the parse read from (Story 6.15
+	// resets it every frame).
+	free_all(context.temp_allocator)
+	if got[0].name != "main riff" {
+		fmt.eprintfln("FAIL: section name did not survive a temp reset: %q", got[0].name)
+		os.exit(1)
+	}
+
+	// A song with no sections.txt loads as an empty list, not an error.
+	empty := sections_load("/tmp/gt_sectioncheck_missing")
+	defer sections_free(&empty)
+	if len(empty) != 0 {
+		fmt.eprintfln("FAIL: missing sections.txt yielded %d sections", len(empty))
+		os.exit(1)
+	}
+
+	// --- arming drives the real producer ---
+	A :: 48000
+	B :: 96000
+	sa: Song_Audio
+	sa.frames = 400000
+	for i in 0 ..< 6 {
+		sa.ctl[i] = {level = 1}
+		sa.stems[i] = make([]f32, i == 0 ? sa.frames : 1)
+	}
+	for j in 0 ..< sa.frames {
+		sa.stems[0][j] = 0.3 * math.sin(2 * math.PI * 220 * f32(j) / clock.SAMPLE_RATE)
+	}
+	player_open(sa)
+	defer stems_free(&sa)
+	defer player_close()
+
+	player_loop_set(A, B)
+	if !player_loop_on() || player_loop_a() != A || player_loop_b() != B {
+		fmt.eprintfln(
+			"FAIL: arming a section did not set the loop (a=%d b=%d on=%v)",
+			player_loop_a(),
+			player_loop_b(),
+			player_loop_on(),
+		)
+		os.exit(1)
+	}
+	if player_loop_passes() != 0 {
+		fmt.eprintfln("FAIL: pass counter starts at %d, want 0", player_loop_passes())
+		os.exit(1)
+	}
+
+	// Drain output so the producer runs; the counter must advance as it wraps.
+	// Bounded by wall clock, not iteration count, so a slow or loaded machine
+	// waits longer rather than failing.
+	buf: [4096]f32
+	drain_deadline := time.now()
+	for player_loop_passes() < 3 {
+		if time.duration_seconds(time.since(drain_deadline)) > 30 do break
+		if audio_pcm_read(buf[:]) == 0 do time.sleep(time.Millisecond)
+	}
+	passes := player_loop_passes()
+	if passes < 3 {
+		fmt.eprintfln("FAIL: pass counter reached only %d after draining the loop", passes)
+		os.exit(1)
+	}
+	if c := player_cursor(); c < A - PLAYER_BLOCK || c > B + 4 * PLAYER_BLOCK {
+		fmt.eprintfln("FAIL: cursor %d outside the armed span [%d,%d)", c, A, B)
+		os.exit(1)
+	}
+
+	// --- a seek past B wraps but must not credit a pass ---
+	// Scrubbing with the arrow keys, or arming a section while the cursor is
+	// already beyond it, both land in the producer's wrap branch. They have to
+	// wrap (staying inside the span) without inflating the repetition count the
+	// speed ladder reads.
+	player_toggle() // pause: the producer applies a seek even while paused,
+	time.sleep(30 * time.Millisecond) //  which is the path that used to slip through
+	player_loop_reset_passes()
+	player_seek(B + 20000)
+	time.sleep(30 * time.Millisecond)
+	player_toggle() // resume
+	// Wait for the wrap to actually happen before judging the counter — the
+	// cursor starts *past* B, so a naive "played far enough" loop would exit on
+	// the very first sample, before the producer had wrapped at all, and would
+	// pass no matter what the counter did.
+	seek_deadline := time.now()
+	wrapped := false
+	for {
+		if time.duration_seconds(time.since(seek_deadline)) > 30 do break
+		if audio_pcm_read(buf[:]) == 0 {
+			time.sleep(time.Millisecond)
+			continue
+		}
+		c := player_cursor()
+		if !wrapped {
+			wrapped = c < B
+			continue
+		}
+		if c > A + (B - A) / 2 do break // well into the span
+	}
+	if !wrapped {
+		fmt.eprintln("FAIL: a seek past B never wrapped back into the loop")
+		os.exit(1)
+	}
+	if p := player_loop_passes(); p != 0 {
+		fmt.eprintfln("FAIL: a seek past B credited %d pass(es); it played none", p)
+		os.exit(1)
+	}
+	// ...and a genuine lap after that still counts.
+	lap_deadline := time.now()
+	for player_loop_passes() < 1 {
+		if time.duration_seconds(time.since(lap_deadline)) > 30 do break
+		if audio_pcm_read(buf[:]) == 0 do time.sleep(time.Millisecond)
+	}
+	if player_loop_passes() != 1 {
+		fmt.eprintfln(
+			"FAIL: the lap after a seek was not counted (passes %d)",
+			player_loop_passes(),
+		)
+		os.exit(1)
+	}
+
+	// --- pre-roll: the wrap goes to before A, not to A ---
+	// Half a second of run-up, sampled with a small read so the cursor is
+	// observed roughly every 512 frames. The first version used a 12000-frame
+	// pre-roll sampled with 4096-frame reads — about three samples inside the
+	// run-up per pass, which is thin enough to miss, and did (once in ~300 runs).
+	PRE :: 24000
+	player_set_preroll(PRE)
+	player_loop_set(A, B)
+	small: [512]f32
+	min_cursor := max(int)
+	preroll_deadline := time.now()
+	for player_loop_passes() < 3 {
+		if time.duration_seconds(time.since(preroll_deadline)) > 30 do break
+		if audio_pcm_read(small[:]) == 0 {
+			time.sleep(time.Millisecond)
+			continue
+		}
+		min_cursor = min(min_cursor, player_cursor())
+	}
+	if min_cursor >= A {
+		fmt.eprintfln(
+			"FAIL: pre-roll never took the cursor before A (lowest cursor %d, A is %d)",
+			min_cursor,
+			A,
+		)
+		os.exit(1)
+	}
+	// And it must not run off the front of the song.
+	if min_cursor < 0 {
+		fmt.eprintfln("FAIL: pre-roll took the cursor negative (%d)", min_cursor)
+		os.exit(1)
+	}
+	player_set_preroll(0)
+
+	// --- the ladder moves only when switched on ---
+	off := sections.Section{name = "no ladder", a = A, b = B, speed = 0.7, ladder = false}
+	on := sections.Section{name = "ladder", a = A, b = B, speed = 0.7, ladder = true}
+	if s := section_speed(off, 100); s != 0.7 {
+		fmt.eprintfln("FAIL: ladder-off section drifted to %.3f after 100 passes", s)
+		os.exit(1)
+	}
+	if s := section_speed(on, sections.LADDER_EVERY); abs(s - 0.75) > 1e-4 {
+		fmt.eprintfln("FAIL: ladder-on section at %.3f after one rung, want 0.75", s)
+		os.exit(1)
+	}
+	if s := section_speed(on, 10000); s != 1 {
+		fmt.eprintfln("FAIL: ladder overshot 1.0 (got %.3f)", s)
+		os.exit(1)
+	}
+
+	fmt.printfln(
+		"PASS: sections round-trip, arm the producer loop (%d passes counted), a seek past B credits none, pre-roll runs up to A, ladder advances only when enabled",
+		passes,
 	)
 }

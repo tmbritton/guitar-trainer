@@ -11,6 +11,7 @@ import "core:time"
 import rl "vendor:raylib"
 
 import "clock"
+import "sections"
 import "store"
 
 // screenshot renders the drill screen and the progress panel (with some seeded
@@ -18,7 +19,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "settings" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "naming" || a == "settings" {
 			which = a
 		}
 	}
@@ -180,7 +181,7 @@ screenshot :: proc() {
 		g_shot_artist = song_artist(songs[0])
 		shot_frame(proc() {loading_draw(g_shot_title, g_shot_artist)}, "gt_loading.png")
 		fmt.println("wrote gt_loading.png")
-	case "player":
+	case "player", "naming":
 		// A synthetic ~3-min song (frames drive the display; stems are silent so
 		// nothing plays during capture): guitar turned down, drums muted.
 		sa: Song_Audio
@@ -213,7 +214,41 @@ screenshot :: proc() {
 		player_loop_mark()
 		player_seek(sa.frames / 3)
 		time.sleep(40 * time.Millisecond) // let the producer apply the seek
-		shot_frame(proc() {player_view_draw("Sweet Leaf", "Black Sabbath", 3)}, "gt_player.png")
+		// A couple of saved practice sections, one armed with its ladder on, so
+		// the capture shows the markers and the pass/ladder readout.
+		g_shot_sections = []sections.Section {
+			{name = "main riff", a = sa.frames / 4, b = sa.frames * 2 / 5, speed = 0.75, ladder = true},
+			{name = "solo", a = sa.frames * 3 / 5, b = sa.frames * 4 / 5, speed = 1, ladder = false},
+		}
+		player_set_preroll(2 * int(clock.SAMPLE_RATE))
+		if which == "naming" {
+			// The modal name field, over the player it covers.
+			shot_frame(proc() {
+				player_view_draw(
+					"Sweet Leaf",
+					"Black Sabbath",
+					3,
+					Player_Sections {
+						list = g_shot_sections,
+						armed = -1,
+						naming = true,
+						name = "chorus riff",
+					},
+				)
+			}, "gt_naming.png")
+			player_close()
+			stems_free(&sa)
+			fmt.println("wrote gt_naming.png")
+			return
+		}
+		shot_frame(proc() {
+			player_view_draw(
+				"Sweet Leaf",
+				"Black Sabbath",
+				3,
+				Player_Sections{list = g_shot_sections, armed = 0, passes = 7},
+			)
+		}, "gt_player.png")
 		player_close()
 		stems_free(&sa)
 		fmt.println("wrote gt_player.png")
@@ -223,6 +258,8 @@ screenshot :: proc() {
 	}
 }
 
+@(private = "file")
+g_shot_sections: []sections.Section
 @(private = "file")
 g_shot_title, g_shot_artist: string
 @(private = "file")

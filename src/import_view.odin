@@ -291,7 +291,7 @@ importing_draw :: proc(name: string) {
 
 	switch state {
 	case .Idle, .Running:
-		ui_text("separating stems — this can take a while", 40, 260, 18, UI_DIM)
+		ui_text("separating stems - this can take a while", 40, 260, 18, UI_DIM)
 	case .Done:
 		ui_text(
 			queue_active() ? "added — starting the next one" : "done — added to your library",
@@ -456,7 +456,7 @@ library_view_move :: proc(lv: ^Library_View, delta: int) {
 library_view_draw :: proc(lv: ^Library_View) {
 	ui_text("PLAY A SONG", 40, 40, 40, UI_FRAME)
 	if len(lv.songs) == 0 {
-		ui_text("no songs yet — import one first", 40, 150, 22, UI_DIM)
+		ui_text("no songs yet - import one first", 40, 150, 22, UI_DIM)
 		rl.DrawText("ESC  back", 40, 448, 16, {90, 90, 120, 255})
 		return
 	}
