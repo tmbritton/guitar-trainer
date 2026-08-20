@@ -235,19 +235,29 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   asserted, and `--loadcheck <dir>` measures the real thing on real FLAC.)* Decode stems
   on a worker, in parallel, behind a loading screen.
 
-- [ ] **Story 6.20 — SPACE restarts a finished song.** When a song reaches the
-  end the player sits on PAUSED and SPACE does nothing at all. **Cause:** the
-  producer's end-of-song branch (`player.odin`, `if cursor >= g_player_song.frames`)
-  stores `g_player_playing = 0` and leaves the cursor parked at `frames`.
-  `player_toggle` flips the flag back to 1, but the producer's very next
-  iteration hits the same branch and stores 0 again — so it is a true no-op, not
-  a slow response. Pressing play from the end should rewind first: seek to 0
-  (or to the armed section's A point, if one is armed) and play. Decide whether
-  that lives in `player_toggle` (UI thread, explicit) or in the producer's
-  "asked to play from the end" case, and note that a finished song is also the
-  one state where the transport readout should probably say something other than
-  PAUSED.
-
+- [x] **Story 6.20 — SPACE restarts a finished song.** *(When a song reached the
+  end the player sat on PAUSED and SPACE did nothing at all — a **true no-op**,
+  not a slow response: the producer's end-of-song branch stores
+  `g_player_playing = 0` and parks the cursor at `frames`, so `player_toggle`
+  set the flag to 1 and the producer's very next iteration set it straight back
+  to 0. The fix belongs on the UI side rather than in the producer, whose
+  end-of-song branch should keep doing exactly one thing (stop): `player_toggle`
+  now calls a new `player_restart` when `player_finished()`. Restart goes to the armed
+  section's start when one is armed **and playable**, else to the top. The first
+  draft restarted unconditionally to 0 on the claim that the end is unreachable
+  while a loop is armed — **review proved that false**: the producer clamps loop
+  *B* to `frames` but not loop *A*, so a span starting past the end leaves
+  `loop_on` true while nothing loops, which a hand-edited `sections.txt` (or a
+  section saved against a longer file later replaced at the same path) reaches.
+  `loop_span` is now the single definition of "a loop the producer will actually
+  play", shared by the producer and the restart. The transport also stopped lying: an ended song and a paused one
+  were both `!playing` and both read "PAUSED", which is why a dead key looked
+  like a bug in the key rather than a state with its own rule — it now reads
+  **ENDED** in gold. New `--endcheck` plays a short synthetic song to its end,
+  asserts it stops there and reports finished, then asserts play both resumes and
+  rewinds — and that ordinary mid-song pause/resume still carries on from where
+  it was rather than rewinding. Confirmed failing before the fix, 80 clean runs
+  after.)* Play at the end of a song should start it over.
 - [ ] **Story 6.21 — Remove Practice Drill from the main menu.** The stem
   play-along is the project now; the drill is no longer something to offer on the
   way in. Drop the `"Practice Drill"` item from `main_items` (`app.odin:129`) and

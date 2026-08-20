@@ -71,6 +71,11 @@ player_close :: proc() {
 		g_player_thread = nil
 	}
 	audio_player_activate(false)
+	// Forget the song: the producer is joined, so nothing else reads this, and
+	// leaving `frames` set means player_finished() keeps reporting a closed
+	// player as finished. Not reachable today (both callers are gated on the
+	// Player screen) but it is a trap for the next one.
+	g_player_song = {}
 	if g_stretch != nil { // safe: producer (its only user) is joined
 		soundtouch.st_destroy(g_stretch)
 		g_stretch = nil
@@ -80,11 +85,66 @@ player_close :: proc() {
 // ---- UI commands (main thread) ----
 
 player_toggle :: proc() {
+	// Playing from the end means starting over. Without this the flag really
+	// does flicker on and straight back off: the producer's end-of-song branch
+	// re-stores 0 on its very next iteration, so the key was a true no-op.
+	if player_finished() {
+		player_restart()
+		return
+	}
 	intrinsics.atomic_store(&g_player_playing, intrinsics.atomic_load(&g_player_playing) == 0 ? 1 : 0)
+}
+
+// player_restart rewinds and plays.
+//
+// To the armed section's start when one is armed *and playable*, else to the top
+// of the song. Both halves matter: an unplayable armed span (A at or past the
+// end) is exactly how a song reaches its end with `loop_on` still set, and
+// seeking to that A would land back at the end — a restart key that does
+// nothing, for the second time. Preferring a playable A also stops this
+// clobbering `player_loop_set`'s pending seek when a section is armed and SPACE
+// pressed inside the same frame.
+player_restart :: proc() {
+	target := 0
+	if a, _, ok := loop_span(g_player_song.frames); ok {
+		target = max(0, a - int(intrinsics.atomic_load(&g_loop_preroll)))
+	}
+	player_seek(target)
+	intrinsics.atomic_store(&g_player_playing, 1)
 }
 
 player_playing :: proc() -> bool {
 	return intrinsics.atomic_load(&g_player_playing) != 0
+}
+
+// loop_span returns the A-B span the producer will actually loop on, and whether
+// it will loop at all.
+//
+// One definition, because two nearly-identical ones drifted apart: `loop_on`
+// being set is NOT the same as looping. B is clamped to the song length but A is
+// not, so a span starting at or past the end (a hand-edited sections.txt, or a
+// section saved against a longer file that was later replaced at the same source
+// path) leaves `loop_on` true while nothing loops.
+@(private = "file")
+loop_span :: proc(frames: int) -> (a, b: int, ok: bool) {
+	if intrinsics.atomic_load(&g_loop_on) == 0 do return 0, 0, false
+	a = int(intrinsics.atomic_load(&g_loop_a))
+	b = min(int(intrinsics.atomic_load(&g_loop_b)), frames)
+	// A span shorter than one block cannot be produced — see the producer.
+	return a, b, a >= 0 && b - a >= PLAYER_BLOCK
+}
+
+// player_finished reports a song stopped at or past its end, as against one the
+// user paused mid-song. The two look identical from `playing` alone, and the
+// transport used to render both as PAUSED.
+//
+// "At or past the end" rather than "ran out": pausing and then seeking past the
+// end reads as finished too. That is the right answer either way, since the
+// response to both is to start over.
+player_finished :: proc() -> bool {
+	if intrinsics.atomic_load(&g_player_playing) != 0 do return false
+	return g_player_song.frames > 0 &&
+	       int(intrinsics.atomic_load(&g_player_cursor)) >= g_player_song.frames
 }
 
 player_cursor :: proc() -> int {
@@ -256,16 +316,14 @@ player_loop :: proc() {
 		cursor := int(intrinsics.atomic_load(&g_player_cursor))
 
 		// A-B loop: wrap back to A when the cursor reaches B (like a seek).
-		loop_on := intrinsics.atomic_load(&g_loop_on) != 0
-		loop_a := int(intrinsics.atomic_load(&g_loop_a))
-		loop_b := min(int(intrinsics.atomic_load(&g_loop_b)), g_player_song.frames)
 		// A span shorter than one block cannot be produced: the stretcher is
 		// cleared on every wrap before it can emit anything, so nothing reaches
 		// the ring, the ring never fills, and none of the sleeps below are
 		// reached — a silent 100% CPU spin. player_loop_mark can create exactly
 		// such a span (both marks on one cursor, i.e. pressing L twice while
-		// paused), so refuse to loop on it rather than hang.
-		looping := loop_on && loop_a >= 0 && loop_b - loop_a >= PLAYER_BLOCK
+		// paused), so refuse to loop on it rather than hang. loop_span holds
+		// that rule so the UI can ask the same question.
+		loop_a, loop_b, looping := loop_span(g_player_song.frames)
 		if looping && cursor >= loop_b {
 			// A completed pass — but only if playing got us here. A seek past B
 			// (an arrow-key scrub, or arming a section while the cursor is
@@ -283,6 +341,16 @@ player_loop :: proc() {
 		}
 
 		if cursor >= g_player_song.frames { // reached the end
+			// A restart is in flight. player_restart publishes the seek and the
+			// play flag as two separate stores, and this loop reads them at two
+			// separate points — so without this guard the sequence "read seek
+			// (none) / restart publishes both / read playing (yes) / fall
+			// through to here" stores playing = 0 on top of the restart. The
+			// song then rewinds and sits there PAUSED at 0:00, which is worse
+			// than the dead key it replaced, because `finished` is now false so
+			// nothing explains it. `continue`, not fall-through: `frames -
+			// cursor` is <= 0 here, and a negative block length is a panic.
+			if intrinsics.atomic_load(&g_player_seek) >= 0 do continue
 			if !bypass { // flush the stretcher tail before pausing
 				soundtouch.st_flush(g_stretch)
 				drain_stretch(out[:])

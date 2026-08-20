@@ -1884,3 +1884,125 @@ sectioncheck :: proc() {
 		passes,
 	)
 }
+
+// endcheck verifies that a finished song restarts on play (Story 6.20).
+//
+// The old behaviour was a true no-op, which is what makes this worth a test: the
+// producer's end-of-song branch stores playing = 0 and parks the cursor at
+// `frames`, so player_toggle set the flag to 1 and the producer's next iteration
+// set it straight back to 0. Nothing moved, and nothing said why.
+endcheck :: proc() {
+	// Two seconds is long enough that the end is a real transition and short
+	// enough that the headless producer reaches it immediately.
+	sa: Song_Audio
+	sa.frames = 2 * int(clock.SAMPLE_RATE)
+	for i in 0 ..< 6 {
+		sa.ctl[i] = {level = 1}
+		sa.stems[i] = make([]f32, i == 0 ? sa.frames : 1)
+	}
+	for j in 0 ..< sa.frames {
+		sa.stems[0][j] = 0.3 * math.sin(2 * math.PI * 220 * f32(j) / clock.SAMPLE_RATE)
+	}
+	player_open(sa) // autostarts playing
+	defer stems_free(&sa)
+	defer player_close()
+
+	buf: [4096]f32
+	// --- play through to the end ---
+	started := time.now()
+	for player_playing() {
+		if time.duration_seconds(time.since(started)) > 30 do break
+		if audio_pcm_read(buf[:]) == 0 do time.sleep(time.Millisecond)
+	}
+	if player_playing() {
+		fmt.eprintln("FAIL: the song never reached its end")
+		os.exit(1)
+	}
+	if c := player_cursor(); c < sa.frames {
+		fmt.eprintfln("FAIL: playback stopped at %d, before the end (%d)", c, sa.frames)
+		os.exit(1)
+	}
+	if !player_finished() {
+		fmt.eprintln("FAIL: a song stopped at its end does not report finished")
+		os.exit(1)
+	}
+
+	// --- SPACE must restart it ---
+	player_toggle()
+	// Deliberately NO assertion on player_playing() here: it would read the flag
+	// nanoseconds after the UI itself set it, long before the producer could act
+	// on it, so it can only ever pass. The meaningful checks are below, after the
+	// producer has had a chance to either honour the restart or clobber it.
+	//
+	// The rewind is a seek, so wait for the cursor rather than reading it
+	// immediately. Three seconds is generous: the producer acts within one 5 ms
+	// iteration, and the pre-fix failure (cursor pinned at `frames`) or the
+	// clobbered-restart failure (cursor 0, playing false) are both settled by
+	// then. It used to be 30, which only made a certain failure slow.
+	restart_started := time.now()
+	for {
+		if time.duration_seconds(time.since(restart_started)) > 3 {
+			fmt.eprintfln(
+				"FAIL: play at the end did not restart (cursor %d of %d, playing %v)",
+				player_cursor(),
+				sa.frames,
+				player_playing(),
+			)
+			os.exit(1)
+		}
+		if audio_pcm_read(buf[:]) == 0 {
+			time.sleep(time.Millisecond)
+			continue
+		}
+		if player_cursor() < sa.frames / 2 do break
+	}
+	// This is the assertion that catches the restart being half-applied: the seek
+	// lands (so the loop above breaks on the rewound cursor) but the producer's
+	// end-of-song branch clobbers the play flag, leaving the song rewound and
+	// paused at 0:00 — worse than the dead key it replaced, since `finished` is
+	// then false and nothing explains it.
+	if !player_playing() {
+		fmt.eprintln("FAIL: restarted to the top but playback stopped - the play flag was clobbered")
+		os.exit(1)
+	}
+	if player_finished() {
+		fmt.eprintln("FAIL: a restarted song still reports finished")
+		os.exit(1)
+	}
+
+	// --- and it is still an ordinary pause/resume mid-song ---
+	player_toggle()
+	time.sleep(30 * time.Millisecond)
+	if player_playing() {
+		fmt.eprintln("FAIL: SPACE mid-song no longer pauses")
+		os.exit(1)
+	}
+	paused_at := player_cursor()
+	player_toggle()
+	if !player_playing() {
+		fmt.eprintln("FAIL: SPACE did not resume from a mid-song pause")
+		os.exit(1)
+	}
+	// Prove it actually resumed *and* carried on, by draining until the cursor
+	// moves forward. Reading the cursor without draining proves nothing: the ring
+	// is full by now, so the producer parks and the cursor legitimately sits
+	// still. A spurious restart would show up as a cursor below paused_at.
+	resume_started := time.now()
+	for player_cursor() <= paused_at {
+		if player_cursor() < paused_at {
+			fmt.eprintfln(
+				"FAIL: resuming mid-song rewound to %d from %d - it should carry on",
+				player_cursor(),
+				paused_at,
+			)
+			os.exit(1)
+		}
+		if time.duration_seconds(time.since(resume_started)) > 3 {
+			fmt.eprintfln("FAIL: resuming mid-song did not advance the cursor from %d", paused_at)
+			os.exit(1)
+		}
+		if audio_pcm_read(buf[:]) == 0 do time.sleep(time.Millisecond)
+	}
+
+	fmt.println("PASS: a finished song restarts on play, and mid-song pause/resume is unchanged")
+}

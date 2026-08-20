@@ -294,7 +294,9 @@ passthrough at the monitor level for players using their own outboard amp.
 mixer.txt so a corrupt section line can't cost you your mixer). `N` arms/cycles,
 `R` names the current span, `K` toggles that section's speed ladder, `T` cycles
 the pre-roll, `DEL` removes; `L` disarms (it clears the loop, so leaving a
-section armed would desync the HUD and the ladder). The producer counts a **pass** on each wrap at B — but not one caused by a seek
+section armed would desync the HUD and the ladder).
+
+The producer counts a **pass** on each wrap at B — but not one caused by a seek
 (it tracks a `jumped` flag cleared only once audio has been produced from the new
 position; a seek taken while *paused* wraps on a later iteration, so a
 per-iteration flag is not enough). Spans shorter than `sections.MIN_FRAMES` are
@@ -319,7 +321,17 @@ B (like a seek: `st_clear`s the stretcher, clamps the block so it never crosses
 B). **Drag-drop import:** dropping an audio file on the window (`rl.IsFileDropped`)
 starts the same import flow as the browser.
 
-Controls: `SPACE` play/pause, `←/→` seek, `↑/↓` select stem, `+/-` level,
+A song that runs out reads **ENDED**, not PAUSED, and `SPACE` restarts it
+(`player_restart`) — to the armed section's start if one is armed *and playable*,
+else to the top. **`loop_on` being set is not the same as looping**: the producer
+clamps loop B to the song length but not loop A, so a span starting past the end
+(a hand-edited `sections.txt`) leaves the loop "armed" while nothing wraps.
+`loop_span` holds that one definition, shared by the producer and the restart.
+The producer's end-of-song branch also bails while a seek is pending, or it would
+clobber the play flag a restart just set and leave the song rewound but paused.
+
+Controls: `SPACE` play/pause (restart at the end), `←/→` seek, `↑/↓` select
+stem, `+/-` level,
 `M` mute, `S` solo, `[`/`]` speed, `L` A-B loop, `N` arm section, `R` save span,
 `K` ladder, `T` pre-roll, `DEL` remove section, `G` monitor on/off, `D` dry
 (bypass), `,`/`.` drive, `B` cab, `9`/`0` monitor level, `Z`/`X` bass, `C`/`V`
@@ -358,7 +370,8 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
 device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
-cursor inside the span and wraps at B), `sectioncheck` (practice
+cursor inside the span and wraps at B), `endcheck` (a finished song restarts on
+play, and mid-song pause/resume still carries on), `sectioncheck` (practice
 sections: round-trip through the library, arming drives the real producer loop,
 the pass counter advances, pre-roll runs up to A, the ladder advances only when
 enabled), `loadcheck` (async

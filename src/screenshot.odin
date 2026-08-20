@@ -19,7 +19,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "naming" || a == "settings" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "naming" || a == "ended" || a == "settings" {
 			which = a
 		}
 	}
@@ -181,7 +181,7 @@ screenshot :: proc() {
 		g_shot_artist = song_artist(songs[0])
 		shot_frame(proc() {loading_draw(g_shot_title, g_shot_artist)}, "gt_loading.png")
 		fmt.println("wrote gt_loading.png")
-	case "player", "naming":
+	case "player", "naming", "ended":
 		// A synthetic ~3-min song (frames drive the display; stems are silent so
 		// nothing plays during capture): guitar turned down, drums muted.
 		sa: Song_Audio
@@ -221,6 +221,29 @@ screenshot :: proc() {
 			{name = "solo", a = sa.frames * 3 / 5, b = sa.frames * 4 / 5, speed = 1, ladder = false},
 		}
 		player_set_preroll(2 * int(clock.SAMPLE_RATE))
+		if which == "ended" {
+			// Park the cursor at the end so the transport shows the ENDED state
+			// rather than an ordinary pause. Clear the loop first: a *playable*
+			// loop wraps at B before the cursor can reach the end, so leaving
+			// one armed would render a state ordinary playback cannot produce.
+			// The saved sections stay — the app really does still show their
+			// names and markers at the end of a song.
+			player_loop_clear()
+			player_seek(sa.frames)
+			time.sleep(60 * time.Millisecond)
+			shot_frame(proc() {
+				player_view_draw(
+					"Sweet Leaf",
+					"Black Sabbath",
+					3,
+					Player_Sections{list = g_shot_sections, armed = -1},
+				)
+			}, "gt_ended.png")
+			player_close()
+			stems_free(&sa)
+			fmt.println("wrote gt_ended.png")
+			return
+		}
 		if which == "naming" {
 			// The modal name field, over the player it covers.
 			shot_frame(proc() {

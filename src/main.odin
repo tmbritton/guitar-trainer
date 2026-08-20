@@ -36,6 +36,9 @@ main :: proc() {
 		case "--tempcheck":
 			tempcheck()
 			return
+		case "--endcheck":
+			endcheck()
+			return
 		case "--loadcheck":
 			// Optional dir operand: --loadcheck [song-dir] times one real song
 			// both ways instead of running the synthetic assertions.

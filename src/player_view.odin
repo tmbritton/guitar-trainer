@@ -53,7 +53,21 @@ player_view_draw :: proc(
 	// transport
 	ty := i32(STEM_TOP + 6 * STEM_ROW_H + 10)
 	playing := player_playing()
-	ui_text(playing ? "> PLAYING" : "|| PAUSED", 54, ty, 20, playing ? UI_GOOD : UI_GOLD)
+	// A song that ran out and one the user paused are both `!playing`, and both
+	// used to read PAUSED — which is why SPACE doing nothing at the end looked
+	// like a bug in the key rather than a state with its own rule.
+	switch {
+	case playing:
+		ui_text("> PLAYING", 54, ty, 20, UI_GOOD)
+	case player_finished():
+		// Gold rather than dim: a state you act on, not one you wait out. No
+		// inline "SPACE restarts" hint — every spot on this row is already
+		// claimed by the time, speed or section labels at some window state, and
+		// the footer's "SPACE play" is now literally true here.
+		ui_text("ENDED", 54, ty, 20, UI_GOLD)
+	case:
+		ui_text("|| PAUSED", 54, ty, 20, UI_GOLD)
+	}
 	cur, tot := player_cursor(), player_frames()
 	ui_text(fmt.ctprintf("%s / %s", mmss(cur), mmss(tot)), 210, ty, 20, UI_INK)
 	ui_text(fmt.ctprintf("%.2fx", player_speed()), 420, ty, 20, UI_GOLD)
