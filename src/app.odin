@@ -94,6 +94,13 @@ run_app :: proc() {
 	player_sel: int
 	player_dir_buf, player_name_buf, player_artist_buf: [512]u8
 	player_dir, player_name, player_artist: string
+	// A song chosen while the previous (cancelled) load is still draining. ESC
+	// deliberately does not join the decode workers, so for a moment the loader
+	// refuses a new job — without this latch that ENTER would vanish with no
+	// feedback at all, which is exactly the "the app dropped my keystroke"
+	// feeling the async load was meant to remove.
+	pending_open: bool
+	defer stems_load_shutdown() // don't leave decode workers running on quit
 
 	screen := Screen.Main_Menu
 	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
@@ -111,7 +118,7 @@ run_app :: proc() {
 			dropped := rl.LoadDroppedFiles()
 			// ignore drops while a song is playing or an import is running (those
 			// screens own state we'd otherwise leak by switching away).
-			if dropped.count > 0 && screen != .Importing && screen != .Player {
+			if dropped.count > 0 && screen != .Importing && screen != .Loading && screen != .Player {
 				path := string(dropped.paths[0])
 				if songlib.is_supported_audio(path) {
 					// leaving the Drill mid-trial must abandon it (drain the ring,
@@ -259,29 +266,53 @@ run_app :: proc() {
 				// ENTER descends Artist -> Album -> Song; only the Song level
 				// yields a song to load.
 				if s, chosen := library_view_enter(&lib); chosen {
-					if sa, ok := stems_load(s.dir); ok {
-						player_song = sa
-						ctl, rig, _ := prefs_load(s.dir)
-						for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
-						apply_rig(rig)
-						player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
-						// Show the tagged title, not the folder slug.
-						player_name = string(
-							player_name_buf[:copy(player_name_buf[:], song_title(s))],
-						)
-						player_artist = string(
-							player_artist_buf[:copy(player_artist_buf[:], song_artist(s))],
-						)
-						player_sel = 0
-						player_open(player_song)
-						player_set_speed(rig.speed) // after open (which resets speed to 1.0)
-						screen = .Player
-					}
+					// Decoding six stems takes seconds; it runs on workers now
+					// (stemload.odin) so the UI keeps drawing. Copy the display
+					// strings out of the Song here — it points into lib.songs,
+					// which a library reload would free underneath us.
+					player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
+					// Show the tagged title, not the folder slug.
+					player_name = string(
+						player_name_buf[:copy(player_name_buf[:], song_title(s))],
+					)
+					player_artist = string(
+						player_artist_buf[:copy(player_artist_buf[:], song_artist(s))],
+					)
+					// If the loader is still draining a cancelled job it refuses
+					// here; the Loading screen retries every frame and says so.
+					pending_open = !stems_load_begin(player_dir)
+					screen = .Loading
 				}
 			}
 			// ESC walks back up the drill-down, and only leaves for the menu
 			// once we're at the top (Artist) level.
 			if rl.IsKeyPressed(.ESCAPE) && !library_view_back(&lib) do screen = .Main_Menu
+
+		case .Loading:
+			// ESC abandons the load. It does not join the workers — a stem on a
+			// network share can take seconds, and blocking here would be the
+			// very freeze this screen exists to remove. The load is left to
+			// drain and is reaped by the per-frame stems_load_poll above.
+			if rl.IsKeyPressed(.ESCAPE) {
+				pending_open = false
+				stems_load_cancel()
+				screen = .Library
+			} else if pending_open {
+				pending_open = !stems_load_begin(player_dir) // retry until it takes
+			} else if stems_load_poll() == .Ready {
+				if sa, took := stems_load_take(); took {
+					player_song = sa
+					ctl, rig, _ := prefs_load(player_dir)
+					for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
+					apply_rig(rig)
+					player_sel = 0
+					player_open(player_song)
+					player_set_speed(rig.speed) // after open (which resets speed to 1.0)
+					screen = .Player
+				}
+			}
+			// A .Failed load stays on screen with its message until ESC — the
+			// alternative is bouncing back to the library with no explanation.
 
 		case .Player:
 			SR :: int(clock.SAMPLE_RATE)
@@ -342,6 +373,8 @@ run_app :: proc() {
 			browser_draw(&browser)
 		case .Importing:
 			importing_draw(import_name)
+		case .Loading:
+			loading_draw(player_name, player_artist, pending_open)
 		case .Player:
 			player_view_draw(player_name, player_artist, player_sel)
 		}
@@ -356,7 +389,7 @@ run_app :: proc() {
 
 // frame_begin is the prologue of every run_app frame.
 //
-// It is a named procedure rather than an inline statement so --tempcheck can
+// It is a named procedure rather than two inline statements so --tempcheck can
 // drive the *actual* per-frame reset: an inline free_all would leave the fix
 // with no regression coverage at all, since a headless test can never enter
 // run_app's loop.
@@ -368,6 +401,11 @@ frame_begin :: proc() {
 	// songs and their tags are all cloned into the heap allocator (asserted by
 	// --tempcheck).
 	free_all(context.temp_allocator)
+
+	// Advance the async stem loader. Called unconditionally, not just on the
+	// Loading screen: this is what reaps a load the user cancelled, which by
+	// then is running behind whatever screen they went back to.
+	stems_load_poll()
 }
 
 // ---- screens ----
@@ -379,6 +417,7 @@ Screen :: enum {
 	Library,
 	Import,
 	Importing,
+	Loading,
 	Player,
 }
 

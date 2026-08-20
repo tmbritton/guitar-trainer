@@ -33,6 +33,11 @@ main :: proc() {
 		case "--tempcheck":
 			tempcheck()
 			return
+		case "--loadcheck":
+			// Optional dir operand: --loadcheck [song-dir] times one real song
+			// both ways instead of running the synthetic assertions.
+			loadcheck(i + 2 < len(os.args) ? os.args[i + 2] : "")
+			return
 		case "--stemcheck":
 			// Optional dir operand: --stemcheck [song-dir]. With none, the
 			// whole library is checked.

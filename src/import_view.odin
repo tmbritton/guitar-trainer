@@ -562,3 +562,34 @@ parent_dir :: proc(buf: []u8, dir: string) -> string {
 	n := copy(buf, dir[:slash])
 	return string(buf[:n])
 }
+
+// ---- loading screen (decoding a song's stems) ----
+
+// loading_draw is what stands between picking a song and hearing it. Stem
+// decoding used to run on the main thread, so this moment was a ~2 s frozen
+// frame of the library list; it is now a worker per stem (stemload.odin) and
+// this screen, which is drawn from the first frame after ENTER.
+// `waiting` means the previous (cancelled) load has not finished draining yet,
+// so this one has not started — say so rather than showing a stalled 0 / 6.
+loading_draw :: proc(title, artist: string, waiting := false) {
+	ui_text("LOADING", 40, 40, 40, UI_FRAME)
+	ui_text(fmt.ctprintf("%s", title), 40, 120, 26, UI_INK)
+	if len(artist) > 0 do ui_text(fmt.ctprintf("%s", artist), 40, 156, 18, UI_DIM)
+
+	done, total := stems_load_progress()
+	if waiting do done = 0
+	ui_meter(40, 220, 560, 24, total > 0 ? f32(done) / f32(total) : 0, UI_FRAME)
+	rl.DrawText(fmt.ctprintf("%d / %d stems", done, total), 616, 220, 20, UI_INK)
+
+	// Read-only: only the frame loop's stems_load_poll may advance the loader.
+	failed := !waiting && stems_load_state() == .Failed
+	switch {
+	case waiting:
+		ui_text("finishing the previous song", 40, 280, 18, UI_DIM)
+	case failed:
+		ui_text("could not read this song's stems", 40, 280, 18, UI_BAD)
+	case:
+		ui_text("decoding stems", 40, 280, 18, UI_DIM)
+	}
+	rl.DrawText(failed ? "ESC  back" : "ESC  cancel", 40, 448, 16, {90, 90, 120, 255})
+}

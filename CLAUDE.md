@@ -82,6 +82,7 @@ src/
   importqueue.odin batch import: expand marked folders -> sequential file queue
   import_view.odin file browser / importing-progress / library screens (view)
   stems.odin       decode a song's 6 stems to mono f32 @ 48k (Song_Audio)
+  stemload.odin    async stem load: one worker per stem, polled from the frame loop
   player.odin      song player: producer thread mixes stems -> PCM ring; transport
   player_view.odin player screen: mixer strip + transport + rig (pure view)
   songprefs.odin   per-song mixer + rig + speed persistence (library/<song>/mixer.txt)
@@ -245,10 +246,19 @@ unreachable server times out.
 
 ## Song player (play-along)
 
-Opening a library song (Play a Song → ENTER) loads its 6 stems (`stems.odin`,
-mono f32 @ 48 kHz) and plays them mixed. The device is **mono** (see audio.odin),
-so stems mix down to a mono backing stream — stereo output would mean
-reconfiguring the device + every `out`-writer, deferred. A **producer thread**
+Opening a library song (Play a Song → ENTER) loads its 6 stems and plays them
+mixed. The decode is **asynchronous and parallel** (`stemload.odin`): one worker
+per stem, a `.Loading` screen showing "N / 6 stems", and the player opens when
+they land. It used to run synchronously on the main thread — ~2.1 s of frozen UI
+for a 6-minute song, on one core — and is now ~565 ms with nothing frozen.
+**Only the main thread frees**: workers write their own stem slot and decrement a
+counter, and ESC does *not* join (a stem on a network share can take seconds), so
+a cancelled load is left to drain and reaped by `frame_begin`'s per-frame
+`stems_load_poll`. One load at a time — a decoded song is ~340 MB.
+
+The device is **mono** (see audio.odin), so stems mix down to a mono backing
+stream — stereo output would mean reconfiguring the device + every `out`-writer,
+deferred. A **producer thread**
 (`player.odin`) mixes the stems from a shared cursor (per-stem level/mute/solo,
 `mix` pkg) into a lock-free **PCM ring** (`pcmring` pkg); the audio callback
 drains that ring to `out` when `audio_player_activate(true)` — a separate mode
@@ -321,7 +331,10 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
 device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
-cursor inside the span and wraps at B), `tempcheck` (temp allocator is bounded:
+cursor inside the span and wraps at B), `loadcheck` (async
+stem load: matches the sequential path, `stems_load_begin` returns without
+decoding, a cancelled load frees itself; `--loadcheck <dir>` times one real song
+both ways), `tempcheck` (temp allocator is bounded:
 repeated `queue_expand` does not grow the arena, UI state survives a `free_all`,
 and `frame_begin` — run_app's real frame prologue — reclaims), `queuecheck`
 (batch import: recursive

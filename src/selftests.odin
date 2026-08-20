@@ -1441,3 +1441,235 @@ temp_used :: proc() -> uint {
 	return (^runtime.Default_Temp_Allocator)(context.temp_allocator.data).arena.total_used
 }
 
+// loadcheck verifies the async stem loader (Story 6.18): decoding a song's six
+// stems moved off the main thread and onto one worker per stem, so selecting a
+// song no longer freezes the UI.
+//
+// Four claims:
+//   A. It returns the same audio the synchronous path does — parallel decoding
+//      must not scramble which PCM lands in which stem slot.
+//   B. It does not block: stems_load_begin returns in a small fraction of the
+//      time the decode itself takes. Asserted as a ratio against the measured
+//      sequential decode, not as a wall-clock threshold — a plain "parallel was
+//      faster than sequential" check flakes on a loaded machine, and the point
+//      of the story is that begin *returns*, not that it wins a race.
+//   C. A cancelled load frees the partial decode (stems_load_held falls to 0)
+//      without the main thread joining, and the loader returns to Idle so the
+//      next song can be opened.
+//
+// With a `dir` operand it instead times one real song both ways — synthetic WAV
+// stems decode almost for free, so the speed-up is only meaningful against real
+// (FLAC) material.
+loadcheck :: proc(dir := "") {
+	if dir != "" {
+		time_real_song(dir)
+		return
+	}
+	root :: "/tmp/gt_loadcheck"
+	os.remove_all(root)
+	defer os.remove_all(root)
+	_ = os.make_directory_all(root)
+
+	// 20 s per stem: long enough that the decode is measurable, short enough
+	// that the test stays quick. Each stem gets a distinct constant so a
+	// mixed-up slot is unmistakable.
+	L :: 20 * 48000
+	amps := [6]f32{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}
+	stem_names := songlib.STEMS
+	buf := make([]f32, L)
+	defer delete(buf)
+	for name, i in stem_names {
+		for j in 0 ..< L do buf[j] = amps[i]
+		if !write_wav(fmt.tprintf("%s/%s.wav", root, name), buf) {
+			fmt.eprintfln("FAIL: could not write stem %s", name)
+			os.exit(1)
+		}
+	}
+
+	// --- reference: the synchronous path ---
+	sync_start := time.now()
+	ref, ok := stems_load(root)
+	sync_ms := time.duration_milliseconds(time.since(sync_start))
+	if !ok {
+		fmt.eprintln("FAIL: synchronous stems_load failed on the synthetic song")
+		os.exit(1)
+	}
+	defer stems_free(&ref)
+
+	// --- A + B: the async path ---
+	async_start := time.now()
+	if !stems_load_begin(root) {
+		fmt.eprintln("FAIL: stems_load_begin refused on an idle loader")
+		os.exit(1)
+	}
+	begin_ms := time.duration_milliseconds(time.since(async_start))
+	// B: begin must have spawned and returned, not decoded. If it ever joined
+	// inline it would cost at least the parallel decode time, so anything close
+	// to the sequential figure is a regression. The margin here is large (begin
+	// is ~1 ms against a ~25 ms decode), which is what keeps it off the knife
+	// edge that a bare "parallel beat sequential" comparison sits on.
+	if begin_ms * 2 >= sync_ms {
+		fmt.eprintfln(
+			"FAIL: stems_load_begin took %.1f ms against a %.1f ms sequential decode — it is blocking",
+			begin_ms,
+			sync_ms,
+		)
+		os.exit(1)
+	}
+	// Poll to completion the way the frame loop does, watching progress climb.
+	saw_partial := false
+	state := stems_load_poll()
+	for state == .Loading {
+		if done, total := stems_load_progress(); done < total do saw_partial = true
+		time.sleep(time.Millisecond)
+		state = stems_load_poll()
+	}
+	async_ms := time.duration_milliseconds(time.since(async_start))
+	if state != .Ready {
+		fmt.eprintfln("FAIL: async load ended in %v, want Ready", state)
+		os.exit(1)
+	}
+	sa, took := stems_load_take()
+	if !took {
+		fmt.eprintln("FAIL: stems_load_take refused a Ready load")
+		os.exit(1)
+	}
+	defer stems_free(&sa)
+
+	if sa.frames != ref.frames {
+		fmt.eprintfln("FAIL: async frames %d, sync %d", sa.frames, ref.frames)
+		os.exit(1)
+	}
+	for i in 0 ..< 6 {
+		if len(sa.stems[i]) != len(ref.stems[i]) {
+			fmt.eprintfln(
+				"FAIL: stem %d length %d, want %d",
+				i,
+				len(sa.stems[i]),
+				len(ref.stems[i]),
+			)
+			os.exit(1)
+		}
+		// A whole-stem constant: if two workers crossed slots this catches it.
+		if abs(sa.stems[i][L / 2] - ref.stems[i][L / 2]) > 1e-3 {
+			fmt.eprintfln(
+				"FAIL: stem %d holds the wrong audio (%.3f, want %.3f)",
+				i,
+				sa.stems[i][L / 2],
+				ref.stems[i][L / 2],
+			)
+			os.exit(1)
+		}
+	}
+	if !saw_partial {
+		// Not fatal on a very fast machine — it means every stem finished
+		// inside the first poll — but it is worth saying out loud, because it
+		// means this run did not actually observe the non-blocking behaviour.
+		fmt.println("note: decode finished within one poll; progress was not observed mid-flight")
+	}
+
+	// --- C: cancelling ---
+	if !stems_load_begin(root) {
+		fmt.eprintln("FAIL: loader did not return to Idle after take")
+		os.exit(1)
+	}
+	stems_load_cancel()
+	// Must not have blocked; the loader either drained already or is draining.
+	deadline := time.now()
+	for stems_load_poll() != .Idle {
+		if time.duration_seconds(time.since(deadline)) > 10 {
+			fmt.eprintln("FAIL: cancelled load never drained")
+			os.exit(1)
+		}
+		time.sleep(time.Millisecond)
+	}
+	// Returning to Idle is not the same as having freed: assert the loader is
+	// holding no PCM. Without this, deleting stems_free from the .Cancelling
+	// branch would leak a whole song and still pass.
+	if held := stems_load_held(); held != 0 {
+		fmt.eprintfln("FAIL: cancelled load left %d samples resident", held)
+		os.exit(1)
+	}
+	// And the slot is usable again.
+	if !stems_load_begin(root) {
+		fmt.eprintln("FAIL: loader unusable after a cancel")
+		os.exit(1)
+	}
+	for stems_load_poll() == .Loading do time.sleep(time.Millisecond)
+	stems_load_cancel()
+	for stems_load_poll() != .Idle do time.sleep(time.Millisecond)
+
+	// --- a missing song must fail, not hang ---
+	if !stems_load_begin(fmt.tprintf("%s/nonexistent", root)) {
+		fmt.eprintln("FAIL: loader refused a load after the previous one drained")
+		os.exit(1)
+	}
+	for stems_load_poll() == .Loading do time.sleep(time.Millisecond)
+	if st := stems_load_poll(); st != .Failed {
+		fmt.eprintfln("FAIL: a song with no stems ended in %v, want Failed", st)
+		os.exit(1)
+	}
+	stems_load_cancel()
+	if stems_load_poll() != .Idle {
+		fmt.eprintln("FAIL: a Failed load did not clear back to Idle")
+		os.exit(1)
+	}
+	stems_load_shutdown()
+
+	// Wall clock is *reported*, never asserted. Synthetic WAV stems decode in
+	// tens of milliseconds, so a "parallel beat sequential" assertion has only
+	// a few ms of margin and flakes on a busy machine — and the sequential run
+	// above has already warmed the page cache for the async one, so it is not
+	// even a fair comparison. `--loadcheck <dir>` measures the real thing on
+	// real FLAC, where the speed-up is ~4x.
+	fmt.printfln(
+		"PASS: async stem load matches the sync path, does not block (begin %.1f ms vs %.0f ms decode), and cancels cleanly [wall clock, not asserted: %.0f ms parallel vs %.0f ms sequential]",
+		begin_ms,
+		sync_ms,
+		async_ms,
+		sync_ms,
+	)
+}
+
+// time_real_song loads one real library song sequentially and then in parallel,
+// reporting both — the before/after for Story 6.18.
+@(private = "file")
+time_real_song :: proc(dir: string) {
+	seq_start := time.now()
+	ref, ok := stems_load(dir)
+	seq_ms := time.duration_milliseconds(time.since(seq_start))
+	if !ok {
+		fmt.eprintfln("FAIL: no stems decoded from %s", dir)
+		os.exit(1)
+	}
+	frames := ref.frames
+	stems_free(&ref)
+
+	par_start := time.now()
+	if !stems_load_begin(dir) {
+		fmt.eprintln("FAIL: stems_load_begin refused")
+		os.exit(1)
+	}
+	// Sleep between polls: spinning here would steal a core from the six
+	// decoders whose throughput is being measured.
+	for stems_load_poll() == .Loading do time.sleep(200 * time.Microsecond)
+	par_ms := time.duration_milliseconds(time.since(par_start))
+	sa, took := stems_load_take()
+	if !took {
+		fmt.eprintln("FAIL: load did not become Ready")
+		os.exit(1)
+	}
+	if sa.frames != frames {
+		fmt.eprintfln("FAIL: parallel load decoded %d frames, sequential %d", sa.frames, frames)
+		os.exit(1)
+	}
+	stems_free(&sa)
+	fmt.printfln(
+		"%s  %.1fs of audio:  sequential %.0f ms  ->  parallel %.0f ms  (%.1fx)",
+		dir,
+		f32(frames) / clock.SAMPLE_RATE,
+		seq_ms,
+		par_ms,
+		seq_ms / max(par_ms, 1),
+	)
+}

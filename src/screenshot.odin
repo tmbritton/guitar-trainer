@@ -18,7 +18,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "player" || a == "settings" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "loading" || a == "player" || a == "settings" {
 			which = a
 		}
 	}
@@ -153,6 +153,33 @@ screenshot :: proc() {
 		_, _ = library_view_enter(&lv) // -> Song
 		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library_songs.png")
 		fmt.println("wrote gt_library.png gt_library_albums.png gt_library_songs.png")
+	case "loading":
+		// Captured against a real library song, waiting until a couple of stems
+		// have landed so the bar shows real progress. shot_frame's 8 frames run
+		// in a few milliseconds (this path sets no target FPS), so capturing
+		// immediately after begin would always catch an empty 0 / 6 bar —
+		// and *which* frame it caught would be nondeterministic.
+		songs := library_scan(library_root())
+		defer library_free(songs)
+		if len(songs) == 0 {
+			fmt.eprintln("SKIP: no songs in the library to load")
+			return
+		}
+		if !stems_load_begin(songs[0].dir) {
+			fmt.eprintln("FAIL: stems_load_begin refused")
+			return
+		}
+		defer stems_load_shutdown()
+		for i := 0; i < 4000; i += 1 {
+			done, total := stems_load_progress()
+			if done >= 2 || done == total do break
+			if stems_load_poll() != .Loading do break
+			time.sleep(time.Millisecond)
+		}
+		g_shot_title = song_title(songs[0])
+		g_shot_artist = song_artist(songs[0])
+		shot_frame(proc() {loading_draw(g_shot_title, g_shot_artist)}, "gt_loading.png")
+		fmt.println("wrote gt_loading.png")
 	case "player":
 		// A synthetic ~3-min song (frames drive the display; stems are silent so
 		// nothing plays during capture): guitar turned down, drums muted.
@@ -196,6 +223,8 @@ screenshot :: proc() {
 	}
 }
 
+@(private = "file")
+g_shot_title, g_shot_artist: string
 @(private = "file")
 g_shot_browser: ^Browser
 @(private = "file")
