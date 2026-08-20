@@ -160,3 +160,30 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   section round-trips, that per-section speed restores, and that the ladder
   advances only when it is switched on.
 - [x] **Story 6.17 — Run in a window (drop forced fullscreen).** *(`run_app` no longer calls `ToggleBorderlessWindowed()` or `HideCursor()` — the app opens as an ordinary resizable window, and fullscreen is left to the window manager, which already does it well. Forcing it took over the machine while a multi-hour batch import ran, and made the pointer unusable. `SetConfigFlags({.WINDOW_RESIZABLE})` moved above `InitWindow` (flags set afterwards are ignored) and a minimum size of 400x240 keeps the text readable. Almost no layout work was needed: every screen already renders into a fixed 800x480 texture that `blit_fit` scales and letterboxes to the current window each frame — verified by the `fullscreen` screenshot, which blits into a 1280x600 window with correct side bars. Fullscreen is no longer a stated design goal; README updated.)* Stop forcing fullscreen; run in a normal resizable window.
+- [ ] **Story 6.18 — Song loading must not block the UI.** Selecting a song
+  freezes the app for ~2 s before the player appears, which reads as a hang.
+  **Cause found:** `src/app.odin:260` calls `stems_load(s.dir)` *synchronously on
+  the main thread*, and only sets `screen = .Player` once all six stems are
+  decoded. Nothing can redraw meanwhile, so the last Library frame stays on
+  screen with no indication anything is happening.
+  Measured on a 5-minute song: **2.0 s** — and it is **not** the mono-FLAC change
+  (the legacy WAV song takes 1.9 s, so the codec is nearly free). The cost is
+  decoding + resampling six files to mono f32 @ 48 kHz. It runs on **one core**
+  (99% of a single CPU, on a 12-core machine).
+  - **Decode on a worker thread** and switch to the player screen immediately,
+    showing a loading state with per-stem progress ("3 / 6 stems"). The codebase
+    already does exactly this three times — `render.odin` (rig render),
+    `import.odin` (separator), `player.odin` (producer) — so follow that pattern:
+    worker publishes into atomics, main thread polls, no locks.
+  - **Decode the six stems in parallel.** They are independent files, and 12
+    cores are sitting idle; this alone should take the wait to well under a
+    second, at which point the loading state is mostly insurance for slow disks
+    and network-backed libraries.
+  - **ESC during load must cancel cleanly** — free whatever decoded and return to
+    the library, in the same spirit as `import_cancel`.
+  Note while in here: a decoded song is ~**340 MB** resident (6 mono f32 stems at
+  48 kHz for 5 minutes). Not the cause of the pause, but it rules out preloading
+  or keeping several songs in memory. Peak is fine today — leaving the player
+  (`app.odin:318`) frees the stems before you can pick another song — but moving
+  the decode onto a worker makes that ordering easy to break: if the new song
+  starts decoding while the old one is still resident, peak doubles to ~680 MB.
