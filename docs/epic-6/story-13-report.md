@@ -1,7 +1,20 @@
 # Story 6.13 — Dropping Python: a distribution decision report
 
-**Status:** report only. Nothing implemented. This exists so the call can be
-made deliberately rather than by drifting into a rewrite.
+**Status: DECLINED, 2026-08-20.** "The juice isn't worth the squeeze."
+
+Kept because the measurements are the reason, and a decision without its reason
+gets relitigated. The short version: separation is the only hard one of Python's
+three jobs, going native costs **6-8x on import speed**, and the benefit it buys
+— handing someone a single binary — is not a goal today. If distribution ever
+becomes a real requirement, §4's recommended shape still stands: `demucs.cpp` as
+a *fallback* behind the existing separator seam, not a replacement.
+
+One item here is **independent of this decision** and survives it: the
+`-march=native` finding in §1 is about build flags, not Python. It is tracked
+separately as Story 6.19 and is likewise only worth doing if the binary is ever
+handed to someone else.
+
+Everything below is the report as written, before the decision.
 
 **The question as originally written** was "get rid of the Python dependency."
 **The question you actually care about** is "can I hand this to someone as a

@@ -99,51 +99,33 @@ A menu-driven song play-along: import a track, separate it into stems (external 
 - [x] **Story 6.10 — Library location + mono FLAC stems.** *(The library was the bare relative literal `"library"`, so it depended on the working directory the binary was launched from and put stems inside the source repo. `librarypath.odin` now resolves it once: `$GUITAR_TRAINER_LIBRARY` → `$XDG_DATA_HOME/...` → `$HOME/.local/share/guitar-trainer/library` → `./library`. Stems changed from stereo 16-bit WAV to **mono FLAC**: the device is mono so `stems.odin` downmixes on load anyway, making stereo pure waste. Measured on a real Demucs run: ~39 MB for a 5-minute song against ~304 MB — 7.8x. Encoded with `soundfile` (bundles libsndfile; the demucs FLAC path would otherwise need system ffmpeg). `songlib.STEM_EXTS` lists `.flac` then `.wav` and both `is_song_dir` and `stems_load` accept either, so pre-FLAC imports keep working and `--stub` stays on its dependency-free WAV writer. New `--stemcheck [dir]` decodes real library stems and reports length + stem count.)* Move the library out of the repo and make it configurable; stop storing 8x more stem audio than the app can play.
 - [x] **Story 6.11 — Browse anywhere + batch album import.** *(Reaching a media library meant walking up to `/` and back down. Import now has three modes: `P` opens a **Places** jump list (home, Music, and every mounted volume parsed from `/proc/mounts` by the pure `places` pkg), `L` opens a path field (typing or CTRL+V), and BACKSPACE still walks up. `SPACE` marks a row — a marked *folder* means everything under it, which is how an album or artist gets picked — and `I` starts the run. `importqueue.odin` expands marks recursively (depth-capped so a symlink cycle on a share can't walk forever), skips anything already in the library, sorts by path, and feeds `import.odin` one file at a time — sequential on purpose, since Demucs holds one GPU model and concurrency would only contend. Key finding: an idle automounted NAS share appears in `/proc/mounts` **only** as an `autofs` entry, so skipping autofs hid exactly the shares Places exists to reach; and such paths must never be `stat`ed to test liveness, because on a direct automount that triggers the mount and blocks until an unreachable server times out. 7 `places` tests; `--queuecheck` covers expansion, skip-already-imported, path ordering, and a 3-song stub run driven to completion in a redirected temp library.)* Pick folders/albums to import from anywhere, including a NAS share.
 - [x] **Story 6.12 — Import completion summary.** *(Fixed a hang, not just a missing message: `queue_poll` calls `import_reset()` as it retires the last song, so `import_progress()` reported `Idle` on that frame and never `Done` again — the Importing screen sat at 0% on "separating stems" with a blank title and ENTER dead, escapable only by ESC and indistinguishable from a crash. Completion is now **latched in the queue** (`finished`, plus elapsed time and the names of failures) and the screen keys off `queue_is_batch() ? queue_finished() : per-song state`. A finished batch replaces the screen with a summary — "N songs added", elapsed, and any failures named so a bad file is actionable — and the footer now advertises the ENTER that always worked. `--queuecheck` asserts the latched state and the summary tallies, guarding the regression.)* A distinct completed state for single and batch imports.
-- [ ] **Story 6.13 — Native separation: drop the Python dependency.** *(Decision
-  report written — `docs/epic-6/story-13-report.md`. Two findings reframe the
-  ticket. **The model is 53 MB; the runtime around it is 4.8 GB** — 2.7 GB of
-  CUDA libraries plus 1.1 GB of torch, ~90x the thing it exists to run. And
-  **`-march=native` in `src/nam/build.sh` already prevents shipping a binary**,
-  entirely independently of Python: a build from this machine dies with SIGILL on
-  a different CPU, so dropping Python would not by itself produce a distributable
-  binary. Measured cost of going native: demucs.cpp is CPU-only by design (the
-  author tried NVBLAS and reports it "not very useful" — the implementation is
-  built around small matrix multiplies to fit Android/WASM memory limits), and
-  his own benchmark is 4m09s for a 4-minute song on a 16c/32t 5950X against our
-  ~48 s on the GPU — a 6-8x regression, or 9-12 hours to re-import the 106-song
-  library instead of ~1.5. demucs.onnx keeps GPU only via a CUDA execution
-  provider that requires CUDA + cuDNN on the user's machine, which moves the
-  multi-GB dependency rather than removing it. **Recommendation:** fix
-  `-march=native` first (blocks every distribution story, nearly free); go native
-  for tags and FLAC (small, pure, removes two of the three Python uses); and add
-  demucs.cpp as a **fallback behind the existing separator seam** rather than a
-  replacement, so a stranger gets a real single binary and the GPU path still
-  runs when a venv is present. Awaiting a decision.)* Replace the
-  `assets/separate.py` subprocess with in-process inference, so a fresh clone
-  needs no venv, no multi-GB torch download, and no `PROGRESS/DONE/ERROR` pipe
-  protocol. Python is used for three separate things and each needs its own
-  answer — separation is the hard one, the other two are small:
-  - **Separation.** Two viable routes, and the choice hinges on GPU support.
-    (a) [`demucs.cpp`](https://github.com/sevagh/demucs.cpp) — C++17 + header-only
-    **Eigen3** (already vendored for NAM, so this fits the existing on-target
-    build pattern exactly) + OpenMP, supports `htdemucs_6s`, quality "practically
-    identical" to PyTorch. But it is **CPU-only by design** (built for low-memory
-    environments, trading away Torch's speed) — a real regression here, where
-    separation currently runs ~5x realtime on the GPU. (b)
-    [`demucs.onnx`](https://github.com/sevagh/demucs.onnx) + ONNX Runtime's C API —
-    keeps GPU via the CUDA execution provider, and `htdemucs_6s` ONNX weights are
-    published; the cost is a large prebuilt ORT dependency rather than a
-    source-built one. **Benchmark (b) on the target GPU against today's ~5x
-    realtime before committing** — if it holds, (b); if ORT proves painful to
-    vendor, (a) with the CPU cost accepted.
-  - **Tag reading (mutagen).** A native `meta` pkg: FLAC Vorbis comments, ID3v2,
-    MP4 atoms. Pure and unit-testable, and `songlib.parse_meta` / `meta.txt`
-    already isolate the rest of the app from where tags come from.
-  - **FLAC encoding (soundfile).** miniaudio decodes FLAC but does not encode, so
-    this needs libFLAC (or accept larger mono WAV stems).
-  Note the model weights need a one-off conversion (ggml for `demucs.cpp`, ONNX
-  for `demucs.onnx`) — but pre-converted weights are published, so `assets/fetch.sh`
-  can just download them and the runtime stays genuinely Python-free.
+- [~] **Story 6.13 — Native separation: drop the Python dependency. DECLINED
+  2026-08-20.** *(Decision made against the report in
+  `docs/epic-6/story-13-report.md`: the juice isn't worth the squeeze. The
+  numbers that settled it — separation is the only hard one of Python's three
+  jobs, and going native costs **6-8x on import speed** (demucs.cpp is CPU-only
+  by design; its author's own benchmark is 4m09s for a 4-minute song on a 16c/32t
+  5950X against our ~48 s on the GPU, which is 9-12 hours to re-import the
+  106-song library instead of ~1.5). demucs.onnx keeps the GPU only via a CUDA
+  execution provider that requires CUDA + cuDNN on the user's machine, so it
+  relocates the multi-GB dependency rather than removing it. The benefit being
+  bought — handing someone a single binary — is not a goal today, and the venv is
+  a one-time setup cost for the one person using this. Reopen this if
+  distribution ever becomes a real requirement; the report holds the measurements
+  and the recommended shape (demucs.cpp as a **fallback** behind the existing
+  separator seam, not a replacement, so the GPU path survives).)* Replace the
+  `assets/separate.py` subprocess with in-process inference.
+- [ ] **Story 6.19 — Portable build flags (only if distributing).** Falls out of
+  6.13's report but is independent of it, so it outlives that decision.
+  `src/nam/build.sh:22` compiles the neural-amp library with **`-march=native`**,
+  so a binary built here emits instructions for *this* CPU and dies with SIGILL
+  on an older one — possibly not at startup but at the first wide instruction
+  inside an amp render, which reads as a random crash. The binary also resolves
+  `libX11`/`libsqlite3`/`libstdc++` through an rpath into
+  `/home/linuxbrew/.linuxbrew/lib`. Neither matters while the only machine
+  running this is the one that built it. **Do this only when handing the binary
+  to someone else becomes a real requirement** — `-march=x86-64-v2`/`-v3` or
+  runtime dispatch, static-link sqlite3 and libstdc++, leave X11 dynamic.
 - [x] **Story 6.14 — Batch-import correctness.** *(All six review findings fixed. **Slug collisions** — library folders are now `<slug>-<8 hex FNV-1a of the full source path>` (`songlib.unique_slug`), so `Album A/01 Intro.mp3` and `Album B/01 Intro.mp3` no longer collapse onto one folder and silently lose a song; the hash is stable, so the already-imported skip still works across runs. Legacy filename-only folders are still recognised — but only when the folder's `meta.txt` names the same source, so a *different* song sharing a filename isn't wrongly skipped. Verified against the real 106-song library: re-marking an imported album reports 0 to import, so nothing is re-separated. **Duplicate marks** deduped in `queue_add`. **cwd-relative separator** — the venv interpreter and `assets/separate.py` now resolve against the binary's own directory (`app_dir`, cached), matching the cwd-independence Story 6.10 established. **String leak** — `queue_begin_next` frees the popped entries, and `current` is copied into a fixed buffer first (a view would dangle while `importing_draw` renders it). **Silent `I`** now posts "already imported — nothing to do". **Duplicate `is_finished_song`** collapsed into one shared `is_finished_song_dir`. New `--importedcheck <folder>` reports what a folder would still import.)* Fix the defects code review found in Story 6.11.
 - [x] **Story 6.15 — Bound the temp allocator.** *(Nothing in `src/*.odin` ever
   called `free_all(context.temp_allocator)`, and Odin's default temp allocator is
