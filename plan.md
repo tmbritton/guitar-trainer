@@ -115,17 +115,8 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   and the recommended shape (demucs.cpp as a **fallback** behind the existing
   separator seam, not a replacement, so the GPU path survives).)* Replace the
   `assets/separate.py` subprocess with in-process inference.
-- [ ] **Story 6.19 — Portable build flags (only if distributing).** Falls out of
-  6.13's report but is independent of it, so it outlives that decision.
-  `src/nam/build.sh:22` compiles the neural-amp library with **`-march=native`**,
-  so a binary built here emits instructions for *this* CPU and dies with SIGILL
-  on an older one — possibly not at startup but at the first wide instruction
-  inside an amp render, which reads as a random crash. The binary also resolves
-  `libX11`/`libsqlite3`/`libstdc++` through an rpath into
-  `/home/linuxbrew/.linuxbrew/lib`. Neither matters while the only machine
-  running this is the one that built it. **Do this only when handing the binary
-  to someone else becomes a real requirement** — `-march=x86-64-v2`/`-v3` or
-  runtime dispatch, static-link sqlite3 and libstdc++, leave X11 dynamic.
+- [~] **Story 6.19 — Portable build flags.** *(Superseded by Story 7.1 — it is
+  the first step of Epic 7 rather than a stray item under Epic 6.)*
 - [x] **Story 6.14 — Batch-import correctness.** *(All six review findings fixed. **Slug collisions** — library folders are now `<slug>-<8 hex FNV-1a of the full source path>` (`songlib.unique_slug`), so `Album A/01 Intro.mp3` and `Album B/01 Intro.mp3` no longer collapse onto one folder and silently lose a song; the hash is stable, so the already-imported skip still works across runs. Legacy filename-only folders are still recognised — but only when the folder's `meta.txt` names the same source, so a *different* song sharing a filename isn't wrongly skipped. Verified against the real 106-song library: re-marking an imported album reports 0 to import, so nothing is re-separated. **Duplicate marks** deduped in `queue_add`. **cwd-relative separator** — the venv interpreter and `assets/separate.py` now resolve against the binary's own directory (`app_dir`, cached), matching the cwd-independence Story 6.10 established. **String leak** — `queue_begin_next` frees the popped entries, and `current` is copied into a fixed buffer first (a view would dangle while `importing_draw` renders it). **Silent `I`** now posts "already imported — nothing to do". **Duplicate `is_finished_song`** collapsed into one shared `is_finished_song_dir`. New `--importedcheck <folder>` reports what a folder would still import.)* Fix the defects code review found in Story 6.11.
 - [x] **Story 6.15 — Bound the temp allocator.** *(Nothing in `src/*.odin` ever
   called `free_all(context.temp_allocator)`, and Odin's default temp allocator is
@@ -233,3 +224,96 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   one, and it failed 1 in 6 under load — wall clock is now reported, never
   asserted, and `--loadcheck <dir>` measures the real thing on real FLAC.)* Decode stems
   on a worker, in parallel, behind a loading screen.
+
+## Epic 7 — Multi-platform distribution
+
+**Why now:** the goal changed from "runs on my machine" to "someone else can use
+it" — specifically a guitarist on a Mac. That is a different project: it means
+building somewhere other than the machine that runs it, on architectures this has
+never been compiled for, and handing the result to someone who will not open a
+terminal to fix it.
+
+**Scope note:** Story 6.13 (drop the Python dependency) was declined on the
+grounds that distribution was not a goal. That premise no longer holds, and
+Story 7.6 is where it gets revisited — but see 7.6 for a route that may make it
+unnecessary anyway.
+
+### What is already portable (verified by reading the code, not assumed)
+
+Encouraging: there is **no platform-specific application code to port**. `grep`
+for `ODIN_OS` across `src/` returns two hits, both `ODIN_DEBUG`, neither about
+the OS.
+
+- **`vendor:raylib`** has a Darwin branch that links Cocoa / IOKit / CoreVideo.
+- **`vendor:miniaudio`**'s build script is generic (`cc`, `ar`, no platform
+  branches); miniaudio itself speaks CoreAudio.
+- **`system:sqlite3`** — macOS ships libsqlite3.
+- **`places`** already treats a missing `/proc/mounts` as "no mounted volumes"
+  rather than an error, so the Import browser degrades instead of breaking.
+- **`separate.py`** already picks `cpu` when CUDA is unavailable.
+
+### What actually blocks it
+
+- [ ] **Story 7.1 — Portable build flags.** (Was 6.19.) `src/nam/build.sh:22`
+  passes **`-march=native`**. Two distinct problems: on x86-64 it bakes in the
+  *building* machine's instruction set, so the binary dies with SIGILL on an
+  older CPU — possibly not at startup but at the first wide instruction inside an
+  amp render, which reads as a random crash. And on **Apple Silicon it is not
+  merely wrong but invalid**: clang spells the equivalent `-mcpu` on arm64 and
+  rejects `-march=native` outright, so this script cannot build at all on an
+  M-series Mac. Replace with a baseline (`-march=x86-64-v2`, or `-v3` for AVX2)
+  plus an env override for local builds, and nothing on arm64 (NEON is already
+  baseline). Also `-lstdc++` must become `-lc++` on macOS, and the `BREW_LIB`
+  rpath is a Linux path. **Measure the cost**: NAM inference is the one place the
+  flags matter, and `--riff-wav` times a full render (~3.1 s here at `native`).
+- [ ] **Story 7.2 — Build and run on macOS at all.** Nobody has ever compiled
+  this on a Mac. Known risks beyond 7.1: `src/nam/build.sh` uses **`ld -r`** to
+  combine objects into one relocatable so the WaveNet parser's static
+  registrations survive the linker — Apple's ld64 accepts `-r`, but the
+  registration trick may need `libtool -static` or `-Wl,-force_load` instead, and
+  that failing is silent (the model just won't load). Also verify the duplex
+  `ma_device` opens on CoreAudio with distinct capture/playback devices, which is
+  how the Rocksmith cable is bound.
+- [ ] **Story 7.3 — CI build matrix.** GitHub Actions producing artifacts for
+  macOS arm64 (Apple Silicon), macOS x86-64 (Intel Macs), and Linux x86-64;
+  Linux arm64 if a runner is cheap to get. Needs mise-provisioned Odin per
+  runner, the three vendored C/C++ libs built on each, and `assets/fetch.sh` (or
+  7.5's bundling) run as a step. A universal macOS binary via `lipo` is worth
+  considering over two downloads.
+- [ ] **Story 7.4 — macOS signing and notarisation.** The step that decides
+  whether this is *actually* givable. An unsigned binary downloaded from the
+  internet is refused by Gatekeeper — "cannot be opened because the developer
+  cannot be verified" — with no obvious way out for a non-technical user.
+  Options: an Apple Developer account (~$99/yr) plus `codesign` + `notarytool` in
+  CI; or ship unsigned and talk the recipient through right-click → Open (once
+  per binary, and it looks alarming). Decide before 7.3 finishes, because signing
+  changes the CI shape.
+- [ ] **Story 7.5 — Asset bundling and licensing.** `assets/fetch.sh` downloads
+  third-party SoundFonts, cabinet IRs and NAM amp captures at build time; they
+  are deliberately not committed. Redistributing them inside an app is a
+  different permission from downloading them for personal use — `fetch.sh`
+  already carries a "check their licensing for your use" warning. **This is a
+  legal gate, not a technical one**, and it needs answering before anything ships
+  with tone in it. Fallbacks exist (no `.sf2` → Karplus-Strong; no `.nam` → the
+  sampled path), so a stripped build is possible but sounds much worse.
+- [ ] **Story 7.6 — Song import on a machine with no venv.** The real one. A
+  recipient who cannot import songs has an inert app, since import is the only
+  way songs get in. Three routes, in increasing cost:
+  - **Hand over a pre-separated library.** Separate on the GPU box here and give
+    him `library/` on a USB stick or a download — ~40 MB per song as mono FLAC.
+    His build never needs Python at all, and his copy is a player rather than an
+    importer. Cheapest by far, and worth trying first.
+  - **Bootstrap the venv for him.** On a Mac there is no CUDA, so torch is a
+    fraction of the 4.8 GB it is here — but it is still a terminal step, and
+    CPU/MPS separation will be slow.
+  - **Revisit Story 6.13** (native separation via `demucs.cpp`). Declined when
+    distribution was not a goal; that premise has changed. The report's
+    recommended shape stands: a fallback behind the existing separator seam, not
+    a replacement, so the GPU path here survives.
+  Decide this **before** 7.3, because it determines whether the CI artifact needs
+  a Python story at all.
+- [ ] **Story 7.7 — Platform conventions.** Small, cosmetic, last. The Places
+  jump list reads `/proc/mounts`, so on macOS it offers home and Music but no
+  volumes (they live in `/Volumes`). The library resolves to
+  `$HOME/.local/share/guitar-trainer/library`, which works on macOS but is not
+  the convention (`~/Library/Application Support`). Neither breaks anything.
