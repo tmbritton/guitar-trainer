@@ -212,6 +212,10 @@ run_app :: proc() {
 						browser_clear_marks(&browser)
 						import_name = ""
 						screen = .Importing
+					} else {
+						// Everything marked is already in the library — say so,
+						// or the keypress looks like it was dropped.
+						browser_set_status(&browser, "already imported — nothing to do")
 					}
 				}
 				if rl.IsKeyPressed(.ENTER) {
@@ -230,8 +234,11 @@ run_app :: proc() {
 			// starts the next. queue_poll is a no-op for a single import.
 			queue_poll()
 			// leave when the user acknowledges (ESC always; ENTER once finished).
+			// A batch's completion comes from the queue's latched flag, never
+			// from the per-song state: queue_poll resets that as it retires the
+			// last song, so it reads Idle forever after.
 			_, st := import_progress()
-			done := (st == .Done || st == .Error) && !queue_active()
+			done := queue_is_batch() ? queue_finished() : (st == .Done || st == .Error)
 			if rl.IsKeyPressed(.ESCAPE) || (done && rl.IsKeyPressed(.ENTER)) {
 				queue_cancel() // drop any remaining queue
 				import_cancel() // kill a still-running separator so the join is prompt
@@ -481,9 +488,22 @@ adjust_monitor_tone :: proc(dbass, dtreble: f32) {
 	audio_set_monitor_tone(clamp(b + dbass, -12, 12), clamp(tr + dtreble, -12, 12))
 }
 
-// song_out_dir is the library folder for an imported file: "<library>/<slug>".
-// Written into `buf`.
+// song_out_dir is the library folder for an imported file:
+// "<library>/<slug>-<hash>". The hash is over the full source path — without it
+// two files with the same name in different albums ("Album A/01 Intro.mp3" and
+// "Album B/01 Intro.mp3") resolved to the same folder and the second separation
+// silently overwrote the first. Written into `buf`.
 song_out_dir :: proc(buf: []u8, path: string) -> string {
+	n := copy(buf, library_root())
+	n += copy(buf[n:], "/")
+	s := songlib.unique_slug(path, buf[n:])
+	return string(buf[:n + len(s)])
+}
+
+// song_out_dir_legacy is the pre-hash folder name ("<library>/<slug>"), kept so
+// songs imported before the collision fix are still recognised as imported and
+// are never needlessly separated again. See already_imported.
+song_out_dir_legacy :: proc(buf: []u8, path: string) -> string {
 	n := copy(buf, library_root())
 	n += copy(buf[n:], "/")
 	s := songlib.slug(base_name(path), buf[n:])

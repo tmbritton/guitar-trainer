@@ -34,7 +34,7 @@ library_scan :: proc(root: string, allocator := context.allocator) -> []Song {
 	for e in entries {
 		if e.type != .Directory do continue
 		dir := strings.concatenate({root, "/", e.name}, context.temp_allocator)
-		if is_finished_song(dir) {
+		if is_finished_song_dir(dir) {
 			append(
 				&songs,
 				Song {
@@ -89,8 +89,10 @@ free_meta :: proc(m: songlib.Meta, allocator := context.allocator) {
 	delete(m.source, allocator)
 }
 
-@(private = "file")
-is_finished_song :: proc(dir: string) -> bool {
+// is_finished_song_dir reports whether `dir` holds a complete separation (all 6
+// stems, either extension). Shared with the import queue's already-imported
+// check — there is exactly one definition of "finished".
+is_finished_song_dir :: proc(dir: string) -> bool {
 	entries, err := os.read_directory_by_path(dir, -1, context.temp_allocator)
 	if err != nil do return false
 	names := make([]string, len(entries), context.temp_allocator)

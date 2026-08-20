@@ -1159,13 +1159,42 @@ queuecheck :: proc() {
 		os.exit(1)
 	}
 	queue_reset()
-	// Drop the stand-in library entry again so the drive below has all 3 to do.
+	// Drop the stand-in library entry now that the skip is proven, so the
+	// checks below see all the source files again.
 	os.remove_all(out)
 
-	// --- drive the queue: 3 stub separations must run one after another ---
+	// --- same filename in different albums must not share a library folder ---
+	// This previously lost a song: both separated into <library>/01-intro and
+	// the second overwrote the first.
+	_ = os.make_directory_all(fmt.tprintf("%s/Artist/Album C", root))
+	write(fmt.tprintf("%s/Artist/Album C/01 first.flac", root)) // same name as Album A's
+	nc := queue_expand(marks)
+	if nc != 4 {
+		fmt.eprintfln("FAIL: expected 4 queued after adding a duplicate name, got %d", nc)
+		os.exit(1)
+	}
+	da, db: [512]u8
+	out_a := song_out_dir(da[:], fmt.tprintf("%s/Artist/Album A/01 first.flac", root))
+	out_c := song_out_dir(db[:], fmt.tprintf("%s/Artist/Album C/01 first.flac", root))
+	if out_a == out_c {
+		fmt.eprintfln("FAIL: same filename in different albums collides on %s", out_a)
+		os.exit(1)
+	}
+	queue_reset()
+
+	// --- overlapping marks must not queue the same file twice ---
+	overlap := []string{fmt.tprintf("%s/Artist", root), fmt.tprintf("%s/Artist/Album A", root)}
+	no := queue_expand(overlap)
+	if no != 4 {
+		fmt.eprintfln("FAIL: overlapping marks queued %d files, want 4 (deduped)", no)
+		os.exit(1)
+	}
+	queue_reset()
+
+	// --- drive the queue: 4 stub separations must run one after another ---
 	n4 := queue_expand(marks)
-	if n4 != 3 {
-		fmt.eprintfln("FAIL: re-expand gave %d, want 3", n4)
+	if n4 != 4 {
+		fmt.eprintfln("FAIL: re-expand gave %d, want 4", n4)
 		os.exit(1)
 	}
 	if !queue_start(true) {
@@ -1183,19 +1212,62 @@ queuecheck :: proc() {
 		os.exit(1)
 	}
 	done, total, failed, _ := queue_status()
-	if done != 3 || total != 3 || failed != 0 {
-		fmt.eprintfln("FAIL: queue finished %d/%d with %d failed, want 3/3 and 0", done, total, failed)
+	if done != 4 || total != 4 || failed != 0 {
+		fmt.eprintfln("FAIL: queue finished %d/%d with %d failed, want 4/4 and 0", done, total, failed)
 		os.exit(1)
 	}
-	// Every queued song must now be a complete library entry.
-	for f in ([]string{"01 first.flac", "02 second.flac", "01 other.mp3"}) {
+	// Completion must be latched in the queue. Regression guard: the Importing
+	// screen used to infer it from import_progress(), which queue_poll resets as
+	// it retires the last song — so the screen hung on "separating stems" with
+	// ENTER dead, forever.
+	if !queue_finished() || !queue_is_batch() {
+		fmt.eprintln("FAIL: queue did not latch a finished state")
+		os.exit(1)
+	}
+	added, sfailed, elapsed, failures := queue_summary()
+	if added != 4 || sfailed != 0 || len(failures) != 0 {
+		fmt.eprintfln("FAIL: summary says %d added / %d failed / %d named", added, sfailed, len(failures))
+		os.exit(1)
+	}
+	if elapsed <= 0 {
+		fmt.eprintln("FAIL: summary reported no elapsed time")
+		os.exit(1)
+	}
+	// Every queued song must now be a complete library entry — including both
+	// "01 first.flac" files, which must occupy distinct folders.
+	for f in ([]string {
+		fmt.tprintf("%s/Artist/Album A/01 first.flac", root),
+		fmt.tprintf("%s/Artist/Album A/02 second.flac", root),
+		fmt.tprintf("%s/Artist/Album B/01 other.mp3", root),
+		fmt.tprintf("%s/Artist/Album C/01 first.flac", root),
+	}) {
 		b2: [512]u8
 		if !is_finished_song_dir(song_out_dir(b2[:], f)) {
 			fmt.eprintfln("FAIL: %s did not land in the library", f)
 			os.exit(1)
 		}
 	}
+	// Re-expanding now must find nothing left to do (already-imported skip).
+	if again := queue_expand(marks); again != 0 {
+		fmt.eprintfln("FAIL: %d songs re-queued after a completed run", again)
+		os.exit(1)
+	}
 	queue_reset()
 
-	fmt.println("PASS: import queue expands folders, skips imported, orders by path, runs to completion")
+	fmt.println("PASS: import queue expands folders, skips imported, orders by path, runs to completion, latches a summary")
+}
+
+// importedcheck reports how many source files under `dir` the library already
+// holds. Useful after the collision fix: a real, already-imported album must
+// come back "0 to import", proving the legacy (pre-hash) folder names are still
+// recognised and nothing gets needlessly separated a second time.
+importedcheck :: proc(dir: string) {
+	if dir == "" {
+		fmt.eprintln("usage: guitar-trainer --importedcheck <folder>")
+		os.exit(2)
+	}
+	n := queue_expand([]string{dir})
+	defer queue_reset()
+	fmt.printfln("%d file(s) would be imported from %s", n, dir)
+	for f in g_queue.files do fmt.printfln("  would import: %s", f)
 }

@@ -12,6 +12,7 @@ package main
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:time"
 
 import "songlib"
 
@@ -27,9 +28,22 @@ Import_Queue :: struct {
 	done:    int, // finished (or skipped) so far
 	failed:  int,
 	active:  bool, // a queue run is in progress
-	current: string, // display name of the file being imported (view into names)
-	out_buf: [512]u8,
-	stub:    bool, // run the separator in --stub mode (self-tests only)
+	// Latched when a run completes. Completion CANNOT be inferred from the
+	// per-song state: queue_poll calls import_reset() as it retires the last
+	// song, so import_progress() reports Idle on that very frame and never
+	// reports Done again — which left the Importing screen stuck reading
+	// "separating stems" forever, with ENTER dead.
+	finished: bool,
+	// current names the song being imported. It is a copy, not a view into
+	// `names`: the entry is removed from that array (and freed) as the import
+	// starts, so a view would dangle while importing_draw renders it each frame.
+	current:     string,
+	current_buf: [512]u8,
+	failures:    [dynamic]string, // display names that failed (owned)
+	started:     time.Time,
+	elapsed:     time.Duration,
+	out_buf:     [512]u8,
+	stub:        bool, // run the separator in --stub mode (self-tests only)
 }
 
 g_queue: Import_Queue
@@ -42,6 +56,7 @@ queue_expand :: proc(marks: []string) -> int {
 	queue_reset()
 	g_queue.files = make([dynamic]string)
 	g_queue.names = make([dynamic]string)
+	g_queue.failures = make([dynamic]string)
 	for m in marks {
 		if is_dir(m) {
 			collect_audio(m, 0)
@@ -78,8 +93,10 @@ queue_start :: proc(stub := false) -> bool {
 	if len(g_queue.files) == 0 do return false
 	g_queue.stub = stub
 	g_queue.active = true
+	g_queue.finished = false
 	g_queue.done = 0
 	g_queue.failed = 0
+	g_queue.started = time.now()
 	queue_begin_next()
 	return true
 }
@@ -94,11 +111,16 @@ queue_poll :: proc() -> bool {
 	case .Idle, .Running:
 		return true
 	case .Done, .Error:
-		if st == .Error do g_queue.failed += 1
+		if st == .Error {
+			g_queue.failed += 1
+			append(&g_queue.failures, strings.clone(g_queue.current))
+		}
 		g_queue.done += 1
 		import_reset()
 		if len(g_queue.files) == 0 {
 			g_queue.active = false
+			g_queue.finished = true // latched; survives active going false
+			g_queue.elapsed = time.since(g_queue.started)
 			return false
 		}
 		queue_begin_next()
@@ -111,11 +133,15 @@ queue_poll :: proc() -> bool {
 @(private = "file")
 queue_begin_next :: proc() {
 	src := g_queue.files[0]
-	g_queue.current = g_queue.names[0]
-	ordered_remove(&g_queue.files, 0)
-	ordered_remove(&g_queue.names, 0)
+	name := g_queue.names[0]
+	// Copy the display name before the array entry is freed (see `current`).
+	g_queue.current = string(g_queue.current_buf[:copy(g_queue.current_buf[:], name)])
 	out := song_out_dir(g_queue.out_buf[:], src)
 	import_start(src, out, g_queue.stub)
+	delete(src)
+	delete(name)
+	ordered_remove(&g_queue.files, 0)
+	ordered_remove(&g_queue.names, 0)
 }
 
 queue_cancel :: proc() {
@@ -127,13 +153,29 @@ queue_cancel :: proc() {
 queue_reset :: proc() {
 	for f in g_queue.files do delete(f)
 	for n in g_queue.names do delete(n)
+	for f in g_queue.failures do delete(f)
 	if g_queue.files != nil do delete(g_queue.files)
 	if g_queue.names != nil do delete(g_queue.names)
+	if g_queue.failures != nil do delete(g_queue.failures)
 	g_queue = {}
 }
 
 // queue_active reports whether a batch run is in progress.
 queue_active :: proc() -> bool {return g_queue.active}
+
+// queue_finished reports a completed batch run, and stays true until the queue
+// is reset — this is what the Importing screen keys its "done" state off.
+queue_finished :: proc() -> bool {return g_queue.finished}
+
+// queue_is_batch reports that a batch run is in progress or has just finished,
+// so the Importing screen knows whether to use the queue's completion state or
+// the single-import one.
+queue_is_batch :: proc() -> bool {return g_queue.active || g_queue.finished}
+
+// queue_summary reports a finished run for display.
+queue_summary :: proc() -> (added, failed: int, elapsed: time.Duration, failures: []string) {
+	return g_queue.done - g_queue.failed, g_queue.failed, g_queue.elapsed, g_queue.failures[:]
+}
 
 // queue_status is what the Importing screen renders.
 queue_status :: proc() -> (done, total, failed: int, current: string) {
@@ -145,10 +187,37 @@ queue_status :: proc() -> (done, total, failed: int, current: string) {
 @(private = "file")
 queue_add :: proc(path: string) {
 	// Already separated? Skip — re-importing costs minutes of GPU for nothing.
-	buf: [512]u8
-	if out := song_out_dir(buf[:], path); is_finished_song_dir(out) do return
+	if already_imported(path) do return
+	// Overlapping marks (say `Artist/` and `Artist/Album A/`) walk the same
+	// files twice; without this the song is separated twice and the second run
+	// overwrites the first.
+	for f in g_queue.files do if f == path do return
 	append(&g_queue.files, strings.clone(path))
 	append(&g_queue.names, strings.clone(base_name(path)))
+}
+
+// already_imported reports whether `src` is present in the library, checking
+// both the current collision-safe folder name and the legacy filename-only one.
+// The legacy hit only counts when that folder's meta.txt names this same source
+// file — otherwise a *different* song that merely shares a filename would be
+// wrongly treated as already imported.
+already_imported :: proc(src: string) -> bool {
+	buf: [512]u8
+	if is_finished_song_dir(song_out_dir(buf[:], src)) do return true
+	legacy_buf: [512]u8
+	legacy := song_out_dir_legacy(legacy_buf[:], src)
+	if !is_finished_song_dir(legacy) do return false
+	return meta_source(legacy) == src
+}
+
+// meta_source reads just the `source` line of a song folder's meta.txt.
+// Returns "" when the file is missing (a pre-metadata import) or has no source.
+@(private = "file")
+meta_source :: proc(dir: string) -> string {
+	path := strings.concatenate({dir, "/meta.txt"}, context.temp_allocator)
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil do return ""
+	return songlib.parse_meta(string(data)).source
 }
 
 // collect_audio walks `dir` for supported audio files, depth-limited.
@@ -184,14 +253,4 @@ collect_audio :: proc(dir: string, depth: int) {
 is_dir :: proc(path: string) -> bool {
 	st, err := os.stat(path, context.temp_allocator)
 	return err == nil && st.type == .Directory
-}
-
-// is_finished_song_dir reports whether `dir` already holds a complete
-// separation (all 6 stems).
-is_finished_song_dir :: proc(dir: string) -> bool {
-	entries, err := os.read_directory_by_path(dir, -1, context.temp_allocator)
-	if err != nil do return false
-	names := make([]string, len(entries), context.temp_allocator)
-	for e, i in entries do names[i] = e.name
-	return songlib.is_song_dir(names)
 }

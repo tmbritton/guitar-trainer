@@ -110,3 +110,44 @@ meta_less :: proc(a, b: Meta, fa, fb: string) -> bool {
 	if a.track != b.track do return a.track < b.track
 	return less_fold(display_title(a, fa), display_title(b, fb))
 }
+
+// ---- collision-safe library folder names ----
+
+// Library folders used to be named from the source *filename* alone, so
+// "Album A/01 Intro.mp3" and "Album B/01 Intro.mp3" both mapped to "01-intro":
+// the second separation overwrote the first and one song was silently lost.
+// unique_slug appends a short hash of the full source path, which is stable
+// (re-importing the same file still resolves to the same folder, so the
+// already-imported check keeps working) and distinct per source file.
+SLUG_HASH_HEX :: 8
+
+// path_hash is FNV-1a over the full source path, folded to 32 bits.
+path_hash :: proc(path: string) -> u32 {
+	h: u64 = 0xcbf29ce484222325
+	for i in 0 ..< len(path) {
+		h ~= u64(path[i])
+		h *= 0x100000001b3
+	}
+	return u32(h ~ (h >> 32))
+}
+
+// unique_slug writes "<slug>-<8 hex>" into `buf` and returns the slice used.
+// `path` is the full source path; the slug part comes from its file name.
+unique_slug :: proc(path: string, buf: []u8) -> string {
+	name := path
+	if s := strings.last_index_byte(path, '/'); s >= 0 do name = path[s + 1:]
+	// Reserve room for the "-" + hash so a long filename can't crowd it out.
+	reserve := SLUG_HASH_HEX + 1
+	if len(buf) <= reserve do return ""
+	base := slug(name, buf[:len(buf) - reserve])
+	n := len(base)
+	buf[n] = '-'
+	n += 1
+	h := path_hash(path)
+	hex := "0123456789abcdef"
+	for i in 0 ..< SLUG_HASH_HEX {
+		shift := uint(4 * (SLUG_HASH_HEX - 1 - i))
+		buf[n + i] = hex[(h >> shift) & 0xf]
+	}
+	return string(buf[:n + SLUG_HASH_HEX])
+}

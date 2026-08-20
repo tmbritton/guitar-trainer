@@ -98,23 +98,7 @@ A menu-driven song play-along: import a track, separate it into stems (external 
 - [x] **Story 6.9 — Song metadata + grouped library.** *(`separate.py` reads the source file's tags with mutagen (`easy=True`, so FLAC/MP3/MP4/OGG give uniform keys) and writes `library/<slug>/meta.txt` — a line-oriented `key value` file, values whitespace-normalized because tags like `lyrics` carry embedded newlines. `songlib/meta.odin` parses it allocation-free (subslices of the caller's buffer, cloned by `library.odin`); grouping prefers `albumartist` over `artist` so a "feat." track can't split its own album; `meta_less` sorts artist → album → disc → track → title, feeding both the drill-down levels and album track order from one sort. The Library screen became a drill-down (Artist → Album → Song, `Lib_Level`) whose `rows` rebuild only on level change; ENTER descends, ESC ascends and leaves for the menu only at the top. Player shows title + artist instead of the folder slug. `--meta <song-dir> <source-file>` backfills tags via `separate.py --tags-only`, skipping separation entirely. 8 new songlib tests; all three levels screenshot-verified.)* Display artist/album/title from file tags; group the library by Artist/Album/Song in album order.
 - [x] **Story 6.10 — Library location + mono FLAC stems.** *(The library was the bare relative literal `"library"`, so it depended on the working directory the binary was launched from and put stems inside the source repo. `librarypath.odin` now resolves it once: `$GUITAR_TRAINER_LIBRARY` → `$XDG_DATA_HOME/...` → `$HOME/.local/share/guitar-trainer/library` → `./library`. Stems changed from stereo 16-bit WAV to **mono FLAC**: the device is mono so `stems.odin` downmixes on load anyway, making stereo pure waste. Measured on a real Demucs run: ~39 MB for a 5-minute song against ~304 MB — 7.8x. Encoded with `soundfile` (bundles libsndfile; the demucs FLAC path would otherwise need system ffmpeg). `songlib.STEM_EXTS` lists `.flac` then `.wav` and both `is_song_dir` and `stems_load` accept either, so pre-FLAC imports keep working and `--stub` stays on its dependency-free WAV writer. New `--stemcheck [dir]` decodes real library stems and reports length + stem count.)* Move the library out of the repo and make it configurable; stop storing 8x more stem audio than the app can play.
 - [x] **Story 6.11 — Browse anywhere + batch album import.** *(Reaching a media library meant walking up to `/` and back down. Import now has three modes: `P` opens a **Places** jump list (home, Music, and every mounted volume parsed from `/proc/mounts` by the pure `places` pkg), `L` opens a path field (typing or CTRL+V), and BACKSPACE still walks up. `SPACE` marks a row — a marked *folder* means everything under it, which is how an album or artist gets picked — and `I` starts the run. `importqueue.odin` expands marks recursively (depth-capped so a symlink cycle on a share can't walk forever), skips anything already in the library, sorts by path, and feeds `import.odin` one file at a time — sequential on purpose, since Demucs holds one GPU model and concurrency would only contend. Key finding: an idle automounted NAS share appears in `/proc/mounts` **only** as an `autofs` entry, so skipping autofs hid exactly the shares Places exists to reach; and such paths must never be `stat`ed to test liveness, because on a direct automount that triggers the mount and blocks until an unreachable server times out. 7 `places` tests; `--queuecheck` covers expansion, skip-already-imported, path ordering, and a 3-song stub run driven to completion in a redirected temp library.)* Pick folders/albums to import from anywhere, including a NAS share.
-- [ ] **Story 6.12 — Import completion summary. (BUG — do first.)** Worse than a
-  missing message: after a batch run the Importing screen **hangs permanently**.
-  `queue_poll()` calls `import_reset()` when the last song lands, so on that same
-  frame `import_progress()` reports `Idle` and
-  `done := (st == .Done || st == .Error) && !queue_active()` is false — and stays
-  false forever. The screen is left at 0% reading "separating stems — this can
-  take a while", with a blank title (batch clears `import_name`), the "N failed"
-  count gone (gated on `queue_active()`), and ENTER dead; only ESC escapes, and it
-  reads as a crash. Fix by latching a `queue_finished` state in the queue rather
-  than inferring completion from the per-song state. Then the summary: a distinct
-  **completed** state
-  that survives the queue going inactive — "12 songs added" (or "11 added, 1
-  failed", with the failures named so a bad file is actionable), elapsed time,
-  and an explicit ENTER-to-continue prompt (ENTER already works once finished,
-  but the footer only advertises ESC). Applies to a single import too, which
-  today just swaps one dim line for another. Keep the state in the queue, not the
-  view, so `--queuecheck` can assert the final tallies.
+- [x] **Story 6.12 — Import completion summary.** *(Fixed a hang, not just a missing message: `queue_poll` calls `import_reset()` as it retires the last song, so `import_progress()` reported `Idle` on that frame and never `Done` again — the Importing screen sat at 0% on "separating stems" with a blank title and ENTER dead, escapable only by ESC and indistinguishable from a crash. Completion is now **latched in the queue** (`finished`, plus elapsed time and the names of failures) and the screen keys off `queue_is_batch() ? queue_finished() : per-song state`. A finished batch replaces the screen with a summary — "N songs added", elapsed, and any failures named so a bad file is actionable — and the footer now advertises the ENTER that always worked. `--queuecheck` asserts the latched state and the summary tallies, guarding the regression.)* A distinct completed state for single and batch imports.
 - [ ] **Story 6.13 — Native separation: drop the Python dependency.** Replace the
   `assets/separate.py` subprocess with in-process inference, so a fresh clone
   needs no venv, no multi-GB torch download, and no `PROGRESS/DONE/ERROR` pipe
@@ -141,36 +125,7 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   Note the model weights need a one-off conversion (ggml for `demucs.cpp`, ONNX
   for `demucs.onnx`) — but pre-converted weights are published, so `assets/fetch.sh`
   can just download them and the runtime stays genuinely Python-free.
-- [ ] **Story 6.14 — Batch-import correctness.** Defects found by code review of
-  Story 6.11, in rough severity order:
-  - **Slug collisions lose songs (confirmed by experiment).** `song_out_dir`
-    derives the library folder from the *filename* alone
-    (`songlib.slug(base_name(path))`), so `Album A/01 Intro.mp3` and
-    `Album B/01 Intro.mp3` both separate into `<library>/01-intro` and the second
-    overwrites the first — one song silently lost, one library entry shown. The
-    `is_finished_song_dir` skip can't catch it, since it runs before either is
-    separated. Disambiguate the slug with artist/album (now available in
-    `meta.txt`) or a short hash of the source path.
-  - **Overlapping marks duplicate work.** Marking both `Artist/` and
-    `Artist/Album A/` queues Album A twice — separated twice (minutes of GPU per
-    track) and overwritten. Needs a seen-set in `queue_add`; the UI also gives no
-    hint that a folder's children are already covered.
-  - **The separator is still cwd-relative.** `VENV_PYTHON` (`.venv/bin/python3`)
-    and `assets/separate.py` resolve against the working directory, which
-    contradicts the cwd-independence Story 6.10 just established for the library:
-    launched from elsewhere, import falls back to a system `python3` with no
-    demucs and fails with a message that points at nothing. Resolve both against
-    the executable's directory or an env override.
-  - **Per-entry string leak with a trap.** `queue_begin_next` `ordered_remove`s
-    `files[0]`/`names[0]` without freeing them. Note `g_queue.current` is a view
-    into the removed name and is only readable *because* of the leak — deleting on
-    pop naively turns it into a dangling slice that `importing_draw` renders every
-    frame. Copy `current` into a fixed buffer first, then free.
-  - **`I` is a silent no-op** when everything marked is already imported
-    (`queue_expand` returns 0): no screen change, marks retained, nothing drawn.
-    Indistinguishable from a dropped keypress; needs an "already imported" message.
-  - **Dedupe `is_finished_song` / `is_finished_song_dir`** — `library.odin` and
-    `importqueue.odin` now carry the same check twice.
+- [x] **Story 6.14 — Batch-import correctness.** *(All six review findings fixed. **Slug collisions** — library folders are now `<slug>-<8 hex FNV-1a of the full source path>` (`songlib.unique_slug`), so `Album A/01 Intro.mp3` and `Album B/01 Intro.mp3` no longer collapse onto one folder and silently lose a song; the hash is stable, so the already-imported skip still works across runs. Legacy filename-only folders are still recognised — but only when the folder's `meta.txt` names the same source, so a *different* song sharing a filename isn't wrongly skipped. Verified against the real 106-song library: re-marking an imported album reports 0 to import, so nothing is re-separated. **Duplicate marks** deduped in `queue_add`. **cwd-relative separator** — the venv interpreter and `assets/separate.py` now resolve against the binary's own directory (`app_dir`, cached), matching the cwd-independence Story 6.10 established. **String leak** — `queue_begin_next` frees the popped entries, and `current` is copied into a fixed buffer first (a view would dangle while `importing_draw` renders it). **Silent `I`** now posts "already imported — nothing to do". **Duplicate `is_finished_song`** collapsed into one shared `is_finished_song_dir`. New `--importedcheck <folder>` reports what a folder would still import.)* Fix the defects code review found in Story 6.11.
 - [ ] **Story 6.15 — Bound the temp allocator.** Not import-specific: **nothing in
   `src/*.odin` ever calls `free_all(context.temp_allocator)`**. Draw code runs
   `fmt.ctprintf` every frame and `queue_expand` allocates a directory listing plus
@@ -178,3 +133,22 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   process — unbounded when a large NAS folder is marked. Free per frame in
   `run_app` (and at the end of `queue_expand`), then confirm the audio callback's
   allocation guard still holds under `-debug`.
+- [ ] **Story 6.16 — Saved riff sections (practice a passage).** Story 6.7 already
+  loops a span: `L` cycles mark-A → mark-B → clear and the producer wraps at B.
+  What's missing for actually *drilling a riff* is everything around it. The loop
+  is explicitly transient — `player_open` calls `player_loop_clear()` and nothing
+  in `songprefs.odin` stores it — so the passage you set up is gone the moment you
+  leave the song, and there is only ever one anonymous region. Wanted:
+  - **Named sections persisted per song** (extend `mixer.txt`, which is already
+    tolerant of missing/short lines, or a sibling `sections.txt`): "chorus riff",
+    "solo", each with A/B frames. Pick one to arm the loop; the player's existing
+    wrap logic does the rest.
+  - **A section list in the player** — cycle/select, showing markers for all of
+    them on the seek bar rather than just the armed pair.
+  - **Practice affordances** on the armed section, which is the actual point:
+    a repetition counter, a count-in before each pass, and a **speed ladder**
+    (start at 0.5x and step up toward 1.0 every N clean passes) using the
+    SoundTouch stretcher already in the producer.
+  Keep the frame math in the player (loop points are already atomics read by the
+  producer) and the persistence pure, so a headless check can assert that a saved
+  section round-trips and that the ladder advances.

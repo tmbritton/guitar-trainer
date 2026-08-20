@@ -186,6 +186,15 @@ rebuilt only on a level change — never per frame. ENTER descends,
 `library_view_back` returns false at the top so `app.odin` knows to leave for the
 main menu instead.
 
+**Folder names:** a song's library folder is `<slug>-<8 hex hash of the full
+source path>` (`songlib.unique_slug`). The hash is not decoration — naming from
+the filename alone meant `Album A/01 Intro.mp3` and `Album B/01 Intro.mp3` both
+resolved to `01-intro` and the second import silently overwrote the first. It is
+stable, so re-importing the same file still resolves to the same folder and the
+already-imported skip works. `already_imported` also accepts the **legacy**
+filename-only folder, but only when that folder's `meta.txt` names the same
+`source` — otherwise a different song sharing a filename would be wrongly skipped.
+
 **Backfill:** `./guitar-trainer --meta <song-dir> <source-file>` re-reads tags
 into an existing song via `separate.py --tags-only`, which skips separation
 entirely — so re-tagging costs nothing and never re-runs Demucs.
@@ -317,6 +326,8 @@ folder expansion, already-imported skipping, path ordering, and a 3-song stub
 run driven to completion in a redirected temp library), `stemcheck [dir]`
 (decode real imported stems — the whole library by default — reporting per-song
 length and stem count; catches a stem-format change the loader can't read),
+`importedcheck <folder>` (report how many files under a folder the library does
+not already hold — proves the already-imported skip, incl. legacy folder names),
 `meta <song-dir> <source-file>` (backfill a song's meta.txt from its source
 file's tags; no separation), `riff` / `riff-wav` (audition tone /
 export WAV + timing).

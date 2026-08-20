@@ -10,20 +10,53 @@ package main
 import "base:intrinsics"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:thread"
 
 import "songlib"
 
-// Interpreter for the separator, relative to the repo root the binary runs from
-// (same base as the "assets/separate.py" path below). Created by mise.
+// Interpreter for the separator and the separator script itself, both resolved
+// against the binary's own directory (see app_dir). Created by mise.
 VENV_PYTHON :: ".venv/bin/python3"
+SEPARATOR_SCRIPT :: "assets/separate.py"
 
-// separator_python picks the interpreter to run assets/separate.py with. mise
-// creates ./.venv and installs Demucs into it (see mise.toml), but that venv is
-// only on PATH inside a mise-activated shell — so resolve it directly, and the
-// separator then works however the binary was launched. Falls back to PATH.
+@(private = "file")
+g_app_dir_buf: [512]u8
+@(private = "file")
+g_app_dir: string
+
+// app_dir is the directory holding the running binary. The venv and the
+// separator script sit beside it, and resolving them against the *working*
+// directory meant importing only worked when launched from the repo root:
+// anywhere else `.venv/bin/python3` missed, a system python3 without Demucs was
+// used, and the failure pointed at nothing. Resolved once and cached.
+@(private = "file")
+app_dir :: proc() -> string {
+	if g_app_dir != "" do return g_app_dir
+	if exe, err := os.get_executable_path(context.temp_allocator); err == nil {
+		if slash := strings.last_index_byte(exe, '/'); slash > 0 {
+			g_app_dir = string(g_app_dir_buf[:copy(g_app_dir_buf[:], exe[:slash])])
+			return g_app_dir
+		}
+	}
+	g_app_dir = string(g_app_dir_buf[:copy(g_app_dir_buf[:], ".")]) // last resort
+	return g_app_dir
+}
+
+// separator_python picks the interpreter to run the separator with. mise creates
+// ./.venv and installs Demucs into it (see mise.toml), but that venv is only on
+// PATH inside a mise-activated shell — so resolve it directly, beside the
+// binary. Falls back to PATH when there is no venv.
 separator_python :: proc() -> string {
-	return VENV_PYTHON if os.exists(VENV_PYTHON) else "python3"
+	p := fmt.tprintf("%s/%s", app_dir(), VENV_PYTHON)
+	return p if os.exists(p) else "python3"
+}
+
+// separator_script locates assets/separate.py beside the binary, falling back to
+// the working-directory-relative path.
+separator_script :: proc() -> string {
+	p := fmt.tprintf("%s/%s", app_dir(), SEPARATOR_SCRIPT)
+	return p if os.exists(p) else SEPARATOR_SCRIPT
 }
 
 // meta_backfill re-reads `src`'s tags into `dir`/meta.txt without re-separating,
@@ -39,7 +72,7 @@ meta_backfill :: proc(dir, src: string) {
 		os.exit(2)
 	}
 	// --tags-only writes meta.txt and skips Demucs entirely, so this is instant.
-	argv := []string{separator_python(), "assets/separate.py", src, dir, "--tags-only"}
+	argv := []string{separator_python(), separator_script(), src, dir, "--tags-only"}
 	child, serr := os.process_start({command = argv, stdout = os.stdout, stderr = os.stderr})
 	if serr != nil {
 		fmt.eprintfln("--meta: could not start separate.py (run `mise run setup-python`?)")
@@ -163,7 +196,7 @@ import_worker :: proc() {
 
 	argv: [5]string = {
 		separator_python(),
-		"assets/separate.py",
+		separator_script(),
 		g_import_input,
 		g_import_out,
 		"--stub",

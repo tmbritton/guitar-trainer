@@ -6,6 +6,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:time"
 import rl "vendor:raylib"
 
@@ -17,7 +18,7 @@ import "store"
 screenshot :: proc() {
 	which := "drill"
 	for a in os.args {
-		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "library" || a == "player" || a == "settings" {
+		if a == "progress" || a == "feedback" || a == "fullscreen" || a == "import" || a == "importdone" || a == "library" || a == "player" || a == "settings" {
 			which = a
 		}
 	}
@@ -121,6 +122,19 @@ screenshot :: proc() {
 		browser_open_places(&b)
 		shot_frame(proc() {browser_draw(g_shot_browser)}, "gt_import_places.png")
 		fmt.println("wrote gt_import.png gt_import_marked.png gt_import_places.png")
+	case "importdone":
+		// Fake a finished batch (with one failure) to render the summary screen.
+		g_queue.total = 12
+		g_queue.done = 12
+		g_queue.failed = 1
+		g_queue.finished = true
+		g_queue.elapsed = 11 * time.Minute + 24 * time.Second
+		g_queue.failures = make([dynamic]string)
+		// cloned: queue_reset frees every entry, so a literal would be freed too
+		append(&g_queue.failures, strings.clone("09 Corrupted Track.mp3"))
+		defer queue_reset()
+		shot_frame(proc() {importing_draw("")}, "gt_import_done.png")
+		fmt.println("wrote gt_import_done.png")
 	case "library":
 		root := seed_library() // temp dir with a couple finished songs
 		defer os.remove_all(root)

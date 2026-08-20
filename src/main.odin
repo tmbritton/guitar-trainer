@@ -24,6 +24,9 @@ main :: proc() {
 			}
 			meta_backfill(os.args[i + 2], os.args[i + 3])
 			return
+		case "--importedcheck":
+			importedcheck(i + 2 < len(os.args) ? os.args[i + 2] : "")
+			return
 		case "--queuecheck":
 			queuecheck()
 			return

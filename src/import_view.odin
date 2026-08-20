@@ -8,6 +8,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 import rl "vendor:raylib"
 
 import "menu"
@@ -37,10 +38,19 @@ Browser :: struct {
 	input:     [512]u8, // path-entry text
 	input_len: int,
 	marks:     [dynamic]string, // absolute paths marked for batch import (owned)
+	status:    string, // transient message (e.g. "already imported"); view into status_buf
+	status_buf: [128]u8,
+}
+
+// browser_set_status posts a one-line message under the listing. Cleared by the
+// next mark/navigation so it never goes stale.
+browser_set_status :: proc(b: ^Browser, msg: string) {
+	b.status = string(b.status_buf[:copy(b.status_buf[:], msg)])
 }
 
 // browser_open points the browser at `dir` and (re)loads its listing.
 browser_open :: proc(b: ^Browser, dir: string) {
+	b.status = ""
 	if b.entries != nil do browse_free(b.entries)
 	n := copy(b.dir_buf[:], dir)
 	b.dir = string(b.dir_buf[:n])
@@ -65,6 +75,7 @@ browser_close :: proc(b: ^Browser) {
 // recursively when the import starts (queue_expand), which is how you pick a
 // whole album or artist.
 browser_toggle_mark :: proc(b: ^Browser) {
+	b.status = ""
 	if len(b.entries) == 0 do return
 	buf: [512]u8
 	full := join_path(buf[:], b.dir, b.entries[b.sel].name)
@@ -209,6 +220,9 @@ browser_draw :: proc(b: ^Browser) {
 	if n := browser_mark_count(b); n > 0 {
 		ui_text(fmt.ctprintf("%d marked   I import   C clear", n), 40, 420, 18, UI_GOLD)
 	}
+	if len(b.status) > 0 {
+		ui_text(fmt.ctprintf("%s", b.status), 40, 396, 18, UI_DIM)
+	}
 	rl.DrawText(
 		"UP/DOWN move  ENTER open  SPACE mark  BACKSPACE up  P places  L path  ESC menu",
 		40,
@@ -248,6 +262,13 @@ browser_draw_path :: proc(b: ^Browser) {
 // ---- Importing screen (progress) ----
 
 importing_draw :: proc(name: string) {
+	// A finished batch replaces the whole screen with its summary — the
+	// per-song bar and status are meaningless once there is no song running.
+	if queue_finished() {
+		importing_draw_summary()
+		return
+	}
+
 	ui_text("IMPORTING", 40, 40, 40, UI_FRAME)
 
 	// During a batch run the queue owns the name and supplies the overall
@@ -282,7 +303,47 @@ importing_draw :: proc(name: string) {
 	case .Error:
 		ui_text(fmt.ctprintf("failed: %s", import_message()), 40, 260, 18, UI_BAD)
 	}
-	rl.DrawText("ESC  back", 40, 448, 16, {90, 90, 120, 255})
+	// ENTER already worked once a single import finished; say so.
+	finished := state == .Done || state == .Error
+	rl.DrawText(
+		finished ? "ENTER  continue      ESC  back" : "ESC  cancel",
+		40,
+		448,
+		16,
+		{90, 90, 120, 255},
+	)
+}
+
+// importing_draw_summary is the end-of-batch screen: what landed, what didn't,
+// and how long it took.
+@(private = "file")
+importing_draw_summary :: proc() {
+	added, failed, elapsed, failures := queue_summary()
+	ui_text(failed > 0 ? "IMPORT FINISHED" : "IMPORT COMPLETE", 40, 40, 40, UI_FRAME)
+
+	ui_text(
+		fmt.ctprintf("%d song%s added to your library", added, added == 1 ? "" : "s"),
+		40,
+		120,
+		26,
+		UI_GOOD,
+	)
+	mins := int(time.duration_minutes(elapsed))
+	secs := int(time.duration_seconds(elapsed)) % 60
+	ui_text(fmt.ctprintf("in %dm %02ds", mins, secs), 40, 158, 18, UI_DIM)
+
+	if failed > 0 {
+		ui_text(fmt.ctprintf("%d failed", failed), 40, 200, 22, UI_BAD)
+		// Name the failures — a bad file is only actionable if you know which.
+		for f, i in failures {
+			if i >= 4 {
+				ui_text(fmt.ctprintf("and %d more", len(failures) - 4), 56, i32(232 + i * 26), 18, UI_DIM)
+				break
+			}
+			ui_text(fmt.ctprintf("%s", f), 56, i32(232 + i * 26), 18, UI_DIM)
+		}
+	}
+	rl.DrawText("ENTER  go to your library      ESC  back", 40, 448, 16, {90, 90, 120, 255})
 }
 
 // ---- Library (Play a Song) ----

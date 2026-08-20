@@ -1,5 +1,6 @@
 package songlib
 
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -91,4 +92,40 @@ test_meta_less_untagged_falls_back_to_slug :: proc(t: ^testing.T) {
 	a, b := Meta{}, Meta{}
 	testing.expect(t, meta_less(a, b, "aaa", "bbb"))
 	testing.expect(t, !meta_less(b, a, "bbb", "aaa"))
+}
+
+@(test)
+test_unique_slug_disambiguates_same_filename :: proc(t: ^testing.T) {
+	// The bug this exists for: identical file names in different albums used to
+	// collapse onto one library folder, losing a song.
+	a, b: [128]u8
+	sa := unique_slug("/m/Artist/Album A/01 Intro.mp3", a[:])
+	sb := unique_slug("/m/Artist/Album B/01 Intro.mp3", b[:])
+	testing.expect(t, sa != sb, "same filename in different albums must not collide")
+	testing.expect(t, strings.has_prefix(sa, "01-intro-"), "readable stem is kept")
+	testing.expect_value(t, len(sa), len("01-intro-") + SLUG_HASH_HEX)
+}
+
+@(test)
+test_unique_slug_is_stable :: proc(t: ^testing.T) {
+	// Stability is what makes the already-imported check work across runs.
+	a, b: [128]u8
+	testing.expect_value(
+		t,
+		unique_slug("/m/x/01 Song.flac", a[:]),
+		unique_slug("/m/x/01 Song.flac", b[:]),
+	)
+}
+
+@(test)
+test_unique_slug_handles_small_buffer :: proc(t: ^testing.T) {
+	tiny: [4]u8
+	testing.expect_value(t, unique_slug("/m/x/song.flac", tiny[:]), "")
+	// A tight buffer must still fit, and must still carry the full hash —
+	// truncating the hash instead of the stem would reintroduce collisions.
+	small: [11]u8
+	got := unique_slug("/m/x/song.flac", small[:])
+	testing.expect(t, len(got) <= len(small), "must not overrun the buffer")
+	testing.expect(t, len(got) > SLUG_HASH_HEX, "hash is preserved, stem is what gets squeezed")
+	testing.expect_value(t, got[len(got) - SLUG_HASH_HEX - 1], '-')
 }
