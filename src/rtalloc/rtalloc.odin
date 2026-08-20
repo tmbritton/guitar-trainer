@@ -2,8 +2,13 @@ package rtalloc
 
 // A guard allocator for the audio thread. The audio callback must never touch
 // the heap; this allocator makes any attempt observable (an atomic counter) and,
-// in -debug builds, fatal (a panic). In release it simply refuses with
-// Out_Of_Memory rather than silently returning nil like mem.nil_allocator would.
+// in -debug builds, fatal (a panic). Outside -debug it refuses with
+// Out_Of_Memory rather than returning nil silently.
+//
+// Note the app only installs this guard *in* -debug builds — release callbacks
+// get mem.nil_allocator() instead (see debug.odin), so the Out_Of_Memory path
+// here is what a caller passing this allocator explicitly gets, not what the
+// shipped audio thread runs.
 //
 // The attempt counter lives behind the allocator's `data` pointer so each
 // allocator instance can point at its own counter. The app uses the package

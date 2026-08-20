@@ -321,7 +321,10 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
 device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
-cursor inside the span and wraps at B), `queuecheck` (batch import: recursive
+cursor inside the span and wraps at B), `tempcheck` (temp allocator is bounded:
+repeated `queue_expand` does not grow the arena, UI state survives a `free_all`,
+and `frame_begin` — run_app's real frame prologue — reclaims), `queuecheck`
+(batch import: recursive
 folder expansion, already-imported skipping, path ordering, and a 3-song stub
 run driven to completion in a redirected temp library), `stemcheck [dir]`
 (decode real imported stems — the whole library by default — reporting per-song

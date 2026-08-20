@@ -9,6 +9,8 @@ package main
 // running separations concurrently would contend for the same device and finish
 // no sooner. The UI polls queue_poll() each frame; nothing here blocks.
 
+import "base:runtime"
+
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -53,6 +55,13 @@ g_queue: Import_Queue
 // skipped, so re-marking an album you partly imported only does the remainder.
 // Returns the number of files queued.
 queue_expand :: proc(marks: []string) -> int {
+	// Reclaim every temp allocation this expansion makes. It cannot free_all —
+	// collect_audio recurses, and a nested free_all would drop the parent's
+	// still-live directory listing — so it snapshots the arena watermark and
+	// restores it on exit. Without this, marking a large share left the whole
+	// walk (listings + a joined path per entry) resident for the life of the
+	// process.
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	queue_reset()
 	g_queue.files = make([dynamic]string)
 	g_queue.names = make([dynamic]string)
@@ -224,10 +233,17 @@ meta_source :: proc(dir: string) -> string {
 @(private = "file")
 collect_audio :: proc(dir: string, depth: int) {
 	if depth > QUEUE_MAX_DEPTH do return
+	// Scoped, not free_all: nested calls unwind to their own watermark, so peak
+	// temp usage is one path from the root (O(depth)) rather than the whole
+	// tree. Everything that escapes this proc is cloned to the heap below.
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	entries, err := os.read_directory_by_path(dir, -1, context.temp_allocator)
 	if err != nil do return
-	// Copy the names we need before recursing: the temp allocator backing
-	// `entries` is reused by the nested call.
+	// Clone the names we need to the heap before recursing. With the scope
+	// guard above, a nested call unwinds to its own watermark and cannot touch
+	// this listing — but `entries` and these two arrays are still temp-backed
+	// and die at the end of *this* scope, while queue_add's copies must outlive
+	// it.
 	names := make([dynamic]string, context.temp_allocator)
 	dirs := make([dynamic]string, context.temp_allocator)
 	for e in entries {

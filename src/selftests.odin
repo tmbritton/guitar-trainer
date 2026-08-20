@@ -5,12 +5,13 @@ package main
 // software loopback and asserts an end-to-end invariant, then exits — no window,
 // no hardware. Dispatched from `main` (main.odin).
 
+import "base:runtime"
+
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:strings"
 import "core:time"
-
-import "core:math"
 
 import "clock"
 import "detect"
@@ -1271,3 +1272,172 @@ importedcheck :: proc(dir: string) {
 	fmt.printfln("%d file(s) would be imported from %s", n, dir)
 	for f in g_queue.files do fmt.printfln("  would import: %s", f)
 }
+
+// tempcheck verifies the temp allocator is bounded — that it is reclaimed
+// rather than growing for the life of the process.
+//
+// Three separate claims, because the fix is not one mechanism:
+//   A. Repeating queue_expand does not grow the temp arena. A recursive walk
+//      cannot free_all (it would free the parent's live directory listing), so
+//      it uses a scoped watermark restore; this asserts that scoping works.
+//   B. Library and browser state survives free_all(context.temp_allocator).
+//      The per-frame reset in run_app is only safe because none of that state
+//      is temp-allocated — an invariant worth testing, not assuming.
+//   C. A frame loop that resets stays flat over many iterations.
+tempcheck :: proc() {
+	root :: "/tmp/gt_tempcheck"
+	lib_root :: "/tmp/gt_tempcheck_lib"
+	// Redirect the library before the first library_root() call (it caches).
+	os.remove_all(lib_root)
+	_ = os.set_env(LIBRARY_ENV, lib_root)
+	defer os.remove_all(lib_root)
+	// Part A walks queue_add -> already_imported -> library_root(); without a
+	// live redirect that reads (and creates directories in) the real library.
+	if library_root() != lib_root {
+		fmt.eprintfln("FAIL: library redirect ignored (got %s)", library_root())
+		os.exit(1)
+	}
+	os.remove_all(root)
+	defer os.remove_all(root)
+
+	// A tree big enough that an unreclaimed walk is unmistakable, but quick to
+	// create: 4 albums x 30 tracks, with realistic (long-ish) names.
+	for a in 0 ..< 4 {
+		dir := fmt.tprintf("%s/An Artist With A Long Name/Album Number %d", root, a)
+		_ = os.make_directory_all(dir)
+		for t in 0 ..< 30 {
+			_ = os.write_entire_file(
+				fmt.tprintf("%s/%02d - A Reasonably Long Track Title.flac", dir, t),
+				[]u8{0},
+			)
+		}
+	}
+	// Heap, not temp: this test resets the temp allocator underneath itself.
+	mark := strings.clone(fmt.tprintf("%s/An Artist With A Long Name", root))
+	defer delete(mark)
+	marks := []string{mark}
+
+	// --- A: repeated expansion must not accumulate ---
+	free_all(context.temp_allocator)
+	if n := queue_expand(marks); n != 120 {
+		fmt.eprintfln("FAIL: expected 120 queued files, got %d", n)
+		os.exit(1)
+	}
+	queue_reset()
+	after_one := temp_used()
+	REPEATS :: 12
+	for _ in 0 ..< REPEATS {
+		_ = queue_expand(marks)
+		queue_reset()
+	}
+	after_many := temp_used()
+	// Flat, not linear in REPEATS. The slack covers incidental temp use by the
+	// last iteration itself; growth from a leak is ~REPEATS x after_one.
+	SLACK :: 64 * 1024
+	if after_many > after_one + SLACK {
+		fmt.eprintfln(
+			"FAIL: temp allocator grew across %d expansions: %d -> %d bytes (leak ~%d per call)",
+			REPEATS,
+			after_one,
+			after_many,
+			(after_many - after_one) / REPEATS,
+		)
+		os.exit(1)
+	}
+
+	// --- B: UI state must survive a temp reset ---
+	// Seed a library with one finished song, scan it, then wipe temp and read
+	// the strings back. If anything were a view into the temp arena this is
+	// where it would come back as garbage.
+	song_dir := strings.clone(fmt.tprintf("%s/a-song-abcd1234", lib_root))
+	defer delete(song_dir)
+	_ = os.make_directory_all(song_dir)
+	for stem in songlib.STEMS {
+		_ = os.write_entire_file(fmt.tprintf("%s/%s.flac", song_dir, stem), []u8{0})
+	}
+	_ = os.write_entire_file(
+		fmt.tprintf("%s/meta.txt", song_dir),
+		transmute([]u8)string("artist Some Artist\nalbum Some Album\ntitle Some Title\n"),
+	)
+	songs := library_scan(lib_root)
+	defer library_free(songs)
+	album0 := strings.clone(fmt.tprintf("%s/Album Number 0", mark))
+	defer delete(album0)
+	entries := browse_dir(album0)
+	defer browse_free(entries)
+	free_all(context.temp_allocator)
+	if len(songs) != 1 {
+		fmt.eprintfln("FAIL: expected 1 scanned song, got %d", len(songs))
+		os.exit(1)
+	}
+	if song_title(songs[0]) != "Some Title" || song_artist(songs[0]) != "Some Artist" {
+		fmt.eprintfln(
+			"FAIL: song metadata did not survive a temp reset: title=%q artist=%q",
+			song_title(songs[0]),
+			song_artist(songs[0]),
+		)
+		os.exit(1)
+	}
+	if !strings.has_suffix(songs[0].dir, "a-song-abcd1234") {
+		fmt.eprintfln("FAIL: song dir did not survive a temp reset: %q", songs[0].dir)
+		os.exit(1)
+	}
+	if len(entries) != 30 || !strings.has_suffix(entries[0].name, ".flac") {
+		fmt.eprintfln("FAIL: browse entries did not survive a temp reset (%d entries)", len(entries))
+		os.exit(1)
+	}
+
+	// --- C: run_app's frame prologue actually reclaims ---
+	// This drives frame_begin() — the real procedure run_app calls — rather than
+	// a free_all written into the test, so deleting the reset from the app fails
+	// this check. Usage is sampled at the END of a frame's allocations (not
+	// straight after a reset, which is trivially zero), and compared between an
+	// early frame and a late one: without the reset it climbs linearly.
+	// FRAMES x per-frame formatting must dwarf FRAME_SLACK, or a broken reset
+	// hides inside the tolerance — the first version of this check used 600
+	// frames against a 64 KB slack, which is roughly the growth it was meant to
+	// catch, and passed with the reset deleted. With the reset working the two
+	// samples are taken at identical points in the loop and are exactly equal,
+	// so the tolerance can be small.
+	frame_base: uint
+	FRAMES :: 5000
+	FRAME_SLACK :: 8 * 1024
+	for i in 0 ..< FRAMES {
+		frame_begin()
+		// stand in for the per-frame formatting the draw code does
+		_ = fmt.tprintf("trial %d   accuracy %d%%   key %s", i, i % 100, "C")
+		_ = fmt.ctprintf("%d / %d stems", i % 6, 6)
+		if i == 8 do frame_base = temp_used() // past any first-frame warm-up
+	}
+	if grew := temp_used(); grew > frame_base + FRAME_SLACK {
+		fmt.eprintfln(
+			"FAIL: frame prologue does not reclaim — temp grew %d -> %d bytes over %d frames",
+			frame_base,
+			grew,
+			FRAMES,
+		)
+		os.exit(1)
+	}
+
+	fmt.printfln(
+		"PASS: temp allocator bounded (expansion flat at %d bytes over %d repeats; UI state survives a reset; frame_begin reclaims over %d frames)",
+		after_many,
+		REPEATS,
+		FRAMES,
+	)
+}
+
+// temp_used reports the default temp arena's `total_used` running counter — a
+// growth signal, not a committed-bytes figure. Note it is only decremented by
+// `arena_temp_end` rewinding within a block: freeing a whole spilled block
+// decrements `total_capacity` but not this, so a scope large enough to spill
+// makes the counter drift upward even when the memory really was returned.
+// Every comparison here is between two samples taken at the same point in a
+// loop, which that drift would only make stricter, never falsely lenient.
+// Returns 0 if context.temp_allocator is not the default arena.
+@(private = "file")
+temp_used :: proc() -> uint {
+	if context.temp_allocator.procedure != runtime.default_temp_allocator_proc do return 0
+	return (^runtime.Default_Temp_Allocator)(context.temp_allocator.data).arena.total_used
+}
+

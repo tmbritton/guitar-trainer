@@ -480,7 +480,11 @@ audio_try_pitch :: proc(
 // Odin gotcha (see debug.odin for the debug-build asserting allocator).
 audio_callback :: proc "c" (pDevice: ^ma.device, pOutput, pInput: rawptr, frameCount: u32) {
 	context = runtime.default_context()
+	// Both allocators: the guard exists to catch heap traffic on the audio
+	// thread, and a stray `context.temp_allocator` allocation is exactly that —
+	// but it would have gone to this thread's own arena and never been seen.
 	context.allocator = callback_allocator()
+	context.temp_allocator = callback_allocator()
 
 	n := int(frameCount)
 	in_samples := ([^]f32)(pInput)[:n]

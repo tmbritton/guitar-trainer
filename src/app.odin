@@ -103,6 +103,8 @@ run_app :: proc() {
 	}
 
 	for !rl.WindowShouldClose() {
+		frame_begin()
+
 		// Drag-drop import: dropping an audio file anywhere starts the same import
 		// flow as the file browser (unless an import is already running).
 		if rl.IsFileDropped() {
@@ -350,6 +352,22 @@ run_app :: proc() {
 		blit_fit(target, f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight()))
 		rl.EndDrawing()
 	}
+}
+
+// frame_begin is the prologue of every run_app frame.
+//
+// It is a named procedure rather than an inline statement so --tempcheck can
+// drive the *actual* per-frame reset: an inline free_all would leave the fix
+// with no regression coverage at all, since a headless test can never enter
+// run_app's loop.
+frame_begin :: proc() {
+	// Odin's temp allocator is a growing arena — it reclaims nothing until
+	// something frees it. Draw code formats a dozen strings a frame, so without
+	// this the process grows for as long as the window is open. Safe because
+	// nothing that outlives a frame is temp-allocated: browser entries, library
+	// songs and their tags are all cloned into the heap allocator (asserted by
+	// --tempcheck).
+	free_all(context.temp_allocator)
 }
 
 // ---- screens ----

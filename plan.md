@@ -126,13 +126,31 @@ A menu-driven song play-along: import a track, separate it into stems (external 
   for `demucs.onnx`) — but pre-converted weights are published, so `assets/fetch.sh`
   can just download them and the runtime stays genuinely Python-free.
 - [x] **Story 6.14 — Batch-import correctness.** *(All six review findings fixed. **Slug collisions** — library folders are now `<slug>-<8 hex FNV-1a of the full source path>` (`songlib.unique_slug`), so `Album A/01 Intro.mp3` and `Album B/01 Intro.mp3` no longer collapse onto one folder and silently lose a song; the hash is stable, so the already-imported skip still works across runs. Legacy filename-only folders are still recognised — but only when the folder's `meta.txt` names the same source, so a *different* song sharing a filename isn't wrongly skipped. Verified against the real 106-song library: re-marking an imported album reports 0 to import, so nothing is re-separated. **Duplicate marks** deduped in `queue_add`. **cwd-relative separator** — the venv interpreter and `assets/separate.py` now resolve against the binary's own directory (`app_dir`, cached), matching the cwd-independence Story 6.10 established. **String leak** — `queue_begin_next` frees the popped entries, and `current` is copied into a fixed buffer first (a view would dangle while `importing_draw` renders it). **Silent `I`** now posts "already imported — nothing to do". **Duplicate `is_finished_song`** collapsed into one shared `is_finished_song_dir`. New `--importedcheck <folder>` reports what a folder would still import.)* Fix the defects code review found in Story 6.11.
-- [ ] **Story 6.15 — Bound the temp allocator.** Not import-specific: **nothing in
-  `src/*.odin` ever calls `free_all(context.temp_allocator)`**. Draw code runs
-  `fmt.ctprintf` every frame and `queue_expand` allocates a directory listing plus
-  joined paths per directory walked, so temp memory grows for the life of the
-  process — unbounded when a large NAS folder is marked. Free per frame in
-  `run_app` (and at the end of `queue_expand`), then confirm the audio callback's
-  allocation guard still holds under `-debug`.
+- [x] **Story 6.15 — Bound the temp allocator.** *(Nothing in `src/*.odin` ever
+  called `free_all(context.temp_allocator)`, and Odin's default temp allocator is
+  a **growing arena** — it reclaims nothing until something frees it. Draw code
+  formats a dozen strings a frame, so the process grew for as long as the window
+  stayed open; worse, `queue_expand` reads a directory listing and joins a path
+  per entry, recursively, so marking a large NAS folder left the entire walk
+  resident. Measured on a 120-file tree: **41 KB retained per expansion**. The
+  two need different fixes and conflating them breaks things — the frame loop can
+  `free_all` outright, but a recursive walk cannot, because a nested call would
+  free the parent's still-live listing. `collect_audio` and `queue_expand` use
+  `runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD` instead, a scoped watermark restore
+  that unwinds correctly through recursion and takes peak temp from O(files) to
+  O(depth). Also closed a hole in the audio-thread guard: the callback set
+  `context.allocator` to the guard but left `context.temp_allocator` pointing at
+  the audio thread's own arena, so a stray *temp* allocation — exactly what the
+  guard exists to catch — would have been invisible. New `--tempcheck` asserts all
+  three claims, including that library/browser state survives a temp reset (the
+  per-frame reset depends on that invariant) and that `run_app`'s real frame
+  prologue reclaims — the prologue was extracted into a named `frame_begin` for
+  exactly that reason, after review caught that the first version of this test
+  drove a `free_all` written in the test itself and so proved nothing about the
+  app. Verified with the
+  guard armed: `-debug` `--audiocheck` / `--monitorcheck` / `--playercheck` show
+  0 allocation attempts.)* Free per frame in `run_app` and scope the walk in
+  `queue_expand`.
 - [ ] **Story 6.16 — Saved riff sections (practice a passage).** Story 6.7 already
   loops a span: `L` cycles mark-A → mark-B → clear and the producer wraps at B.
   What's missing for actually *drilling a riff* is everything around it. The loop

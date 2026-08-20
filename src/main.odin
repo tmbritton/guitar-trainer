@@ -30,6 +30,9 @@ main :: proc() {
 		case "--queuecheck":
 			queuecheck()
 			return
+		case "--tempcheck":
+			tempcheck()
+			return
 		case "--stemcheck":
 			// Optional dir operand: --stemcheck [song-dir]. With none, the
 			// whole library is checked.
