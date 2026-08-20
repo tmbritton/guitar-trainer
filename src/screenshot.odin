@@ -111,7 +111,16 @@ screenshot :: proc() {
 		defer browser_close(&b)
 		g_shot_browser = &b
 		shot_frame(proc() {browser_draw(g_shot_browser)}, "gt_import.png")
-		fmt.println("wrote gt_import.png")
+		// Marked rows (the batch-import set), then the Places jump list — the
+		// latter reads real mounts, so this doubles as a check that a NAS share
+		// or USB stick is actually discovered on this machine.
+		browser_toggle_mark(&b)
+		browser_move(&b, 1)
+		browser_toggle_mark(&b)
+		shot_frame(proc() {browser_draw(g_shot_browser)}, "gt_import_marked.png")
+		browser_open_places(&b)
+		shot_frame(proc() {browser_draw(g_shot_browser)}, "gt_import_places.png")
+		fmt.println("wrote gt_import.png gt_import_marked.png gt_import_places.png")
 	case "library":
 		root := seed_library() // temp dir with a couple finished songs
 		defer os.remove_all(root)
@@ -119,8 +128,14 @@ screenshot :: proc() {
 		library_view_reload(&lv, root)
 		defer library_view_close(&lv)
 		g_shot_lib = &lv
+		// One capture per drill-down level, descending into the first artist
+		// (Black Sabbath) and then its first album (Master of Reality).
 		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library.png")
-		fmt.println("wrote gt_library.png")
+		_, _ = library_view_enter(&lv) // -> Album
+		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library_albums.png")
+		_, _ = library_view_enter(&lv) // -> Song
+		shot_frame(proc() {library_view_draw(g_shot_lib)}, "gt_library_songs.png")
+		fmt.println("wrote gt_library.png gt_library_albums.png gt_library_songs.png")
 	case "player":
 		// A synthetic ~3-min song (frames drive the display; stems are silent so
 		// nothing plays during capture): guitar turned down, drums muted.
@@ -154,7 +169,7 @@ screenshot :: proc() {
 		player_loop_mark()
 		player_seek(sa.frames / 3)
 		time.sleep(40 * time.Millisecond) // let the producer apply the seek
-		shot_frame(proc() {player_view_draw("black-dog", 3)}, "gt_player.png")
+		shot_frame(proc() {player_view_draw("Sweet Leaf", "Black Sabbath", 3)}, "gt_player.png")
 		player_close()
 		stems_free(&sa)
 		fmt.println("wrote gt_player.png")
@@ -169,19 +184,47 @@ g_shot_browser: ^Browser
 @(private = "file")
 g_shot_lib: ^Library_View
 
-// seed_library builds a temp library dir with two finished (6-stem) songs so the
-// Library screenshot isn't empty. Returns the root path.
+// seed_library builds a temp library dir of finished (6-stem) songs so the
+// Library screenshots aren't empty. Spans two artists, one of them with two
+// albums and out-of-order track numbers, so the grouping and the track sort are
+// both visible in the capture. Returns the root path.
+@(private = "file")
+Shot_Song :: struct {
+	slug, artist, album, title: string,
+	track, year:                int,
+}
+
 @(private = "file")
 seed_library :: proc() -> string {
 	root :: "/tmp/gt_shotlib"
 	os.remove_all(root)
 	_ = os.make_directory(root)
-	for song in ([]string{"norwegian-wood", "black-dog"}) {
-		dir := fmt.tprintf("%s/%s", root, song)
+	// Deliberately not in display order: library_scan must sort these.
+	songs := []Shot_Song {
+		{"black-dog", "Led Zeppelin", "Led Zeppelin IV", "Black Dog", 1, 1971},
+		{"sweet-leaf", "Black Sabbath", "Master of Reality", "Sweet Leaf", 1, 1971},
+		{"rock-and-roll", "Led Zeppelin", "Led Zeppelin IV", "Rock and Roll", 2, 1971},
+		{"paranoid", "Black Sabbath", "Paranoid", "Paranoid", 2, 1970},
+		{"children-of-the-grave", "Black Sabbath", "Master of Reality", "Children of the Grave", 4, 1971},
+		{"war-pigs", "Black Sabbath", "Paranoid", "War Pigs", 1, 1970},
+		{"after-forever", "Black Sabbath", "Master of Reality", "After Forever", 3, 1971},
+	}
+	for song in songs {
+		dir := fmt.tprintf("%s/%s", root, song.slug)
 		_ = os.make_directory(dir)
 		for stem in ([]string{"vocals", "drums", "bass", "guitar", "piano", "other"}) {
 			_ = os.write_entire_file(fmt.tprintf("%s/%s.wav", dir, stem), []byte{})
 		}
+		meta := fmt.tprintf(
+			"artist %s\nalbumartist %s\nalbum %s\ntitle %s\ntrack %d\nyear %d\n",
+			song.artist,
+			song.artist,
+			song.album,
+			song.title,
+			song.track,
+			song.year,
+		)
+		_ = os.write_entire_file(fmt.tprintf("%s/meta.txt", dir), transmute([]u8)meta)
 	}
 	return root
 }
@@ -191,8 +234,11 @@ g_shot_drill: ^Drill
 
 @(private = "file")
 shot_frame :: proc(draw: proc(), file: cstring) {
-	// render a couple of frames so the framebuffer is valid, then capture
-	for _ in 0 ..< 2 {
+	// Render several frames before capturing. TakeScreenshot reads back the
+	// buffer the compositor last presented, which lags the draw by a swap or
+	// two — with only a couple of warm-up frames the capture comes out empty
+	// (all-black, not even the ClearBackground colour) on some compositors.
+	for _ in 0 ..< 8 {
 		rl.BeginDrawing()
 		rl.ClearBackground({18, 18, 22, 255})
 		draw()

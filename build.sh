@@ -31,9 +31,12 @@ if [ ! -f "src/soundtouch/libsoundtouch.a" ]; then
 	bash src/soundtouch/build.sh
 fi
 
-# raylib links the X11 stack + GL. On this Fedora Atomic (Bluefin) host the dev
-# .so symlinks live under Homebrew, but Homebrew's ld doesn't search its own lib
-# path by default. Point the linker at it and bake an rpath so the binary runs.
+# raylib links the X11 stack + GL. Distros put the dev .so symlinks in different
+# places, and some keep them off the default linker path — so add one extra -L
+# and bake a matching rpath so the built binary still resolves them at runtime.
+# Set BREW_LIB to whichever prefix holds libX11/libGL/libsqlite3 on your system;
+# a path that doesn't exist is ignored by the linker, so this is inert when the
+# libraries are already on the default search path.
 # -lm satisfies TinySoundFont; -lstdc++ the C++ neural-amp lib (src/nam/libnam.a).
 BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
 LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB} -lm -lstdc++"

@@ -5,14 +5,33 @@ package main
 // `--screenshot` captures PNGs (screenshot.odin). With no flag we run the
 // interactive app (app.odin: run_app).
 
+import "core:fmt"
 import "core:os"
 
 WINDOW_W :: 800
 WINDOW_H :: 480
 
 main :: proc() {
-	for arg in os.args[1:] {
+	for arg, i in os.args[1:] {
 		switch arg {
+		case "--meta":
+			// --meta <song-dir> <source-file>: re-read tags for an already
+			// separated song (see import.odin). i indexes os.args[1:], so the
+			// two operands are at i+2 and i+3 in os.args.
+			if i + 3 >= len(os.args) {
+				fmt.eprintfln("usage: guitar-trainer --meta <song-dir> <source-file>")
+				os.exit(2)
+			}
+			meta_backfill(os.args[i + 2], os.args[i + 3])
+			return
+		case "--queuecheck":
+			queuecheck()
+			return
+		case "--stemcheck":
+			// Optional dir operand: --stemcheck [song-dir]. With none, the
+			// whole library is checked.
+			stemcheck(i + 2 < len(os.args) ? os.args[i + 2] : "")
+			return
 		case "--audiocheck":
 			audiocheck()
 			return

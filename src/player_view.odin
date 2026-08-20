@@ -14,8 +14,11 @@ import "songlib"
 STEM_ROW_H :: 40
 STEM_TOP :: 84
 
-player_view_draw :: proc(song_name: string, sel: int) {
-	ui_text(fmt.ctprintf("%s", song_name), 40, 30, 30, UI_FRAME)
+player_view_draw :: proc(song_name, artist: string, sel: int) {
+	ui_text(fmt.ctprintf("%s", song_name), 40, 24, 30, UI_FRAME)
+	// Artist under the title, so the player reads like the library's Song row
+	// rather than repeating the folder slug.
+	if len(artist) > 0 do ui_text(fmt.ctprintf("%s", artist), 40, 56, 18, UI_DIM)
 
 	for stem, i in songlib.STEMS {
 		y := i32(STEM_TOP + i * STEM_ROW_H)

@@ -1,0 +1,21 @@
+# Python deps for the song-import step (assets/separate.py). Everything else in
+# the app is native Odin and needs no Python.
+#
+# Install into the project venv:  mise run setup-python
+# torch pulls ~2-3 GB of CUDA wheels; it is the bulk of the download.
+demucs==4.1.0
+# demucs 4.1.0 imports numpy (demucs/transformer.py) but does not declare it as
+# a dependency, so `pip install demucs` alone gives a venv that fails at import.
+# Pin it here explicitly.
+numpy==2.3.4
+
+# Reads artist/album/title/track tags from the source file at import time
+# (FLAC Vorbis comments, ID3, MP4 atoms) so the library can group by
+# Artist/Album instead of showing filenames. Pure Python, no native deps.
+mutagen==1.48.0
+
+# Writes the separated stems as mono FLAC. The app downmixes every stem to mono
+# f32 at load (src/stems.odin), so stereo stem files cost ~3.4x the disk for
+# audio that is discarded — a 5-min song is ~90 MB mono FLAC vs ~304 MB stereo
+# WAV. Bundles libsndfile in the wheel, so no system ffmpeg/sox is needed.
+soundfile==0.13.1

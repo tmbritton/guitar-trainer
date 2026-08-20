@@ -28,10 +28,15 @@ Song_Audio :: struct {
 stems_load :: proc(dir: string) -> (sa: Song_Audio, ok: bool) {
 	for stem, i in songlib.STEMS {
 		sa.ctl[i] = mix.Stem_Ctl{level = 1}
-		path := fmt.tprintf("%s/%s.wav", dir, stem)
-		if pcm, dok := decode_mono(path); dok {
-			sa.stems[i] = pcm
-			sa.frames = max(sa.frames, len(pcm))
+		// Imports write mono FLAC; the --stub separator (and anything imported
+		// before the format change) writes WAV. Try each in turn.
+		for ext in songlib.STEM_EXTS {
+			path := fmt.tprintf("%s/%s%s", dir, stem, ext)
+			if pcm, dok := decode_mono(path); dok {
+				sa.stems[i] = pcm
+				sa.frames = max(sa.frames, len(pcm))
+				break
+			}
 		}
 	}
 	return sa, sa.frames > 0

@@ -12,6 +12,12 @@ import "core:strconv"
 // The 6 stems Demucs' htdemucs_6s model produces, in a fixed order.
 STEMS :: [6]string{"vocals", "drums", "bass", "guitar", "piano", "other"}
 
+// Extensions a stem file may have, in the order the loader should try them.
+// Real imports write mono FLAC (~3.4x smaller than stereo WAV, and the app
+// downmixes to mono anyway); the --stub separator and pre-FLAC imports write
+// WAV, so both stay loadable.
+STEM_EXTS :: [2]string{".flac", ".wav"}
+
 Kind :: enum {
 	Unknown,
 	Progress,
@@ -89,16 +95,18 @@ slug :: proc(name: string, buf: []u8) -> string {
 	return string(buf[:n])
 }
 
-// is_song_dir reports whether a directory listing contains all 6 stem WAVs, i.e.
-// a finished separation. `entries` are bare file names (not paths).
+// is_song_dir reports whether a directory listing contains all 6 stem files
+// (either extension in STEM_EXTS), i.e. a finished separation. `entries` are bare file names (not paths).
 is_song_dir :: proc(entries: []string) -> bool {
 	for stem in STEMS {
 		found := false
-		for e in entries {
-			// e == stem + ".wav", without allocating the concatenation.
-			if strings.has_suffix(e, ".wav") && e[:len(e) - 4] == stem {
-				found = true
-				break
+		outer: for e in entries {
+			// e == stem + ext, without allocating the concatenation.
+			for ext in STEM_EXTS {
+				if strings.has_suffix(e, ext) && e[:len(e) - len(ext)] == stem {
+					found = true
+					break outer
+				}
 			}
 		}
 		if !found do return false

@@ -11,12 +11,13 @@ if [ ! -f "$ODIN_ROOT/vendor/miniaudio/lib/miniaudio.a" ]; then
 	ODIN_ROOT="$ODIN_ROOT" "$ODIN_ROOT/vendor/miniaudio/src/build_miniaudio.sh"
 fi
 
-# Homebrew lib path so packages that link system libs (e.g. store -> sqlite3)
-# resolve at test-link time. Harmless for the pure packages.
+# Extra lib path so packages that link system libs (e.g. store -> sqlite3)
+# resolve at test-link time; see build.sh. Harmless for the pure packages, and
+# inert if the path doesn't exist. Keep in sync with build.sh's BREW_LIB.
 BREW_LIB="/home/linuxbrew/.linuxbrew/lib"
 LINK_FLAGS="-L${BREW_LIB} -Wl,-rpath,${BREW_LIB}"
 
-packages=(clock ring detect rtalloc calib music game store amp conv menu songlib pcmring mix ampchain)
+packages=(clock ring detect rtalloc calib music game store amp conv menu songlib pcmring mix ampchain places)
 fail=0
 for pkg in "${packages[@]}"; do
 	dir="src/$pkg"

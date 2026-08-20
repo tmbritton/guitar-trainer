@@ -98,3 +98,39 @@ song_dir_needs_all_stems :: proc(t: ^testing.T) {
 
 	testing.expect(t, !is_song_dir([]string{}), "empty dir is not a song")
 }
+
+@(test)
+test_is_song_dir_accepts_flac :: proc(t: ^testing.T) {
+	// Real imports write mono FLAC.
+	flac := []string {
+		"vocals.flac",
+		"drums.flac",
+		"bass.flac",
+		"guitar.flac",
+		"piano.flac",
+		"other.flac",
+		"meta.txt",
+	}
+	testing.expect(t, is_song_dir(flac))
+}
+
+@(test)
+test_is_song_dir_accepts_mixed_extensions :: proc(t: ^testing.T) {
+	// A dir part-migrated from WAV to FLAC must still count as finished.
+	mixed := []string {
+		"vocals.flac",
+		"drums.wav",
+		"bass.flac",
+		"guitar.wav",
+		"piano.flac",
+		"other.flac",
+	}
+	testing.expect(t, is_song_dir(mixed))
+}
+
+@(test)
+test_is_song_dir_rejects_missing_stem :: proc(t: ^testing.T) {
+	testing.expect(t, !is_song_dir([]string{"vocals.flac", "drums.flac"}))
+	// A near-miss name must not satisfy a stem.
+	testing.expect(t, !is_song_dir([]string{"vocals.flac", "drums.flac", "bass.flac", "guitar.flac", "piano.flac", "others.flac"}))
+}

@@ -54,23 +54,47 @@ Fullscreen and distraction-free; a keyboard-driven menu ties it together.
 
 ## Requirements
 
-- **Linux** (developed on Fedora Atomic / Bluefin with PipeWire).
-- [**mise**](https://mise.jdx.dev/) — manages the Odin toolchain (pinned in
-  `mise.toml`); Odin is fetched automatically on first build.
+- **Linux**, with any audio backend miniaudio supports (PipeWire, PulseAudio,
+  ALSA, JACK).
+- [**mise**](https://mise.jdx.dev/) — manages the Odin *and* Python toolchains
+  (both pinned in `mise.toml`); each is fetched automatically. Add
+  `eval "$(mise activate zsh)"` to your shell rc (or the `bash`/`fish`
+  equivalent) so entering the directory activates them. Without `mise activate`,
+  use `mise exec -- <cmd>` / `mise run <task>` instead — shims alone will not
+  activate the Python virtualenv.
 - A **C/C++ compiler** (`cc`/`c++`, gcc or clang) — builds the vendored native
   libraries (miniaudio, TinySoundFont, NeuralAmpModelerCore, SoundTouch).
+- **`clang` on your PATH** — Odin invokes it as the linker driver on every
+  build, even when gcc compiles the C/C++ above. Install your distro's `clang`
+  package (on Homebrew it's inside the keg-only `llvm` formula, so add
+  `$(brew --prefix llvm)/bin` to PATH).
 - **git** and **curl** — the first build clones/fetches native deps (Eigen for
   NAM, SoundTouch source); `assets/fetch.sh` downloads the audio assets.
-- **Python 3 + Demucs** (`pip install demucs`) — *only* for the **Import** step
-  (stem separation). Playing already-separated songs and everything else needs no
-  Python. Demucs is slow on CPU (minutes/song), fast on a GPU — a one-time cost
-  per song.
+- **Python + Demucs** — *only* for the **Import** step (stem separation). Playing
+  already-separated songs and everything else needs no Python. Nothing is
+  installed system-wide: mise pins the interpreter and creates a project
+  virtualenv at `./.venv`, and `mise run setup-python` installs the locked deps
+  (`requirements.lock.txt`) into it. That download is large — a few GB, mostly
+  CUDA-enabled torch. Demucs is slow on CPU (minutes/song), fast on a GPU — a
+  one-time cost per song.
+- **Disk space for the library.** Separation turns one track into six stems.
+  They're stored as mono FLAC (the app plays mono, so stereo would be discarded
+  at load) which keeps a 5-minute song to roughly **40 MB** — but that still adds
+  up across an album collection. By default the library lives in
+  `~/.local/share/guitar-trainer/library`; set **`GUITAR_TRAINER_LIBRARY`** to
+  put it on a bigger disk:
+
+  ```bash
+  GUITAR_TRAINER_LIBRARY=/mnt/big/guitar-trainer ./guitar-trainer
+  ```
 - Link-time libraries: the **X11 + OpenGL** stack (raylib), **sqlite3**,
   **libstdc++**, **libm**.
-  - `build.sh` points the linker at Homebrew's lib path
-    (`/home/linuxbrew/.linuxbrew/lib`) because that's where the dev `.so`s live on
-    the author's host. On a different setup, adjust `BREW_LIB`/`LINK_FLAGS` in
-    `build.sh` to wherever your `libX11.so`, `libGL.so`, `libsqlite3.so`, etc. are.
+  - Distros put these in different places, and some (e.g. immutable/atomic ones)
+    keep the dev `.so`s outside the default linker path. `build.sh` and `test.sh`
+    add one extra `-L` + rpath via `BREW_LIB` for that case. If the link can't
+    find `libX11.so`, `libGL.so`, `libsqlite3.so`, etc., set `BREW_LIB` to
+    whichever prefix holds them; if they're already on the default path, the
+    setting is inert and can be ignored.
 
 ## Getting started (fresh clone)
 
@@ -82,8 +106,10 @@ cd guitar-trainer
 #    Third-party, not committed — see Third-party assets below.
 assets/fetch.sh
 
-# 2. (Optional, for importing songs) install the stem separator.
-pip install demucs
+# 2. (Optional, for importing songs) install the stem separator into ./.venv.
+#    Several GB — CUDA-enabled torch is the bulk of it. Skip if you won't import.
+mise run setup-python
+mise run check-python   # prints demucs/torch versions + whether CUDA is on
 
 # 3. Build. The FIRST run also fetches Odin (via mise) and builds the native
 #    libraries — NAM clones Eigen, SoundTouch clones its source — so it takes a
@@ -105,11 +131,41 @@ The app opens on a **main menu** — Play a Song · Import Song · Practice Dril
 Settings · Quit. `↑`/`↓` move, `Enter` selects, `Esc` goes back (and quits from
 the menu).
 
-**Import Song** — a file browser (`↑`/`↓`, `Enter` to open a folder or import a
-file, `Backspace` up a folder). Importing spawns Demucs and shows a progress bar;
-when it finishes, the song appears under **Play a Song**.
+**Import Song** — a file browser for picking what to separate.
 
-**Play a Song** — the player:
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | move |
+| `Enter` | open a folder, or import the selected file |
+| `Backspace` | up a folder |
+| `P` | **Places** — jump to home, Music, or any mounted disk / USB stick / NAS share |
+| `L` | type or paste a path (`Ctrl+V`) |
+| `Space` | **mark** the selected row for batch import |
+| `I` | import everything marked |
+| `C` | clear marks |
+
+Marking a **folder** means everything under it, so you can mark a few albums (or
+a whole artist) and import them in one run. The queue skips anything already in
+your library, so re-marking a part-imported album only does the remainder, and it
+runs one song at a time — Demucs holds a single model on the GPU, so running them
+concurrently would finish no sooner.
+
+Imports spawn Demucs and show a progress bar; finished songs appear under **Play
+a Song**.
+
+**Play a Song** — a drill-down through your library: **Artist → Album → Song**,
+built from the tags of the file you imported (songs list in album track order).
+`↑`/`↓` move, `Enter` descends, `Esc` goes back up a level — and out to the menu
+from the artist list. Songs with no tags fall back to the folder name under
+"Unknown Artist".
+
+Imported a song before this existed? Re-read its tags without re-running Demucs:
+
+```bash
+./guitar-trainer --meta library/<song-folder> /path/to/original.flac
+```
+
+Then the player:
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|

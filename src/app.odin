@@ -29,6 +29,12 @@ run_app :: proc() {
 	rl.HideCursor()
 	rl.SetTargetFPS(60)
 
+	// raylib's default exit key is ESC, which would close the window from any
+	// screen before the per-screen handlers below could treat ESC as "go back".
+	// Disable it and let each screen decide; only .Main_Menu quits on ESC.
+	// WindowShouldClose() still reports a real window-manager close (X, alt-F4).
+	rl.SetExitKey(.KEY_NULL)
+
 	target := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
 	defer rl.UnloadRenderTexture(target)
 	rl.SetTextureFilter(target.texture, .POINT) // crisp pixels when scaled up
@@ -83,8 +89,8 @@ run_app :: proc() {
 	defer stems_free(&player_song)
 	defer player_close() // runs before stems_free (LIFO): stop the producer, then free
 	player_sel: int
-	player_dir_buf, player_name_buf: [512]u8
-	player_dir, player_name: string
+	player_dir_buf, player_name_buf, player_artist_buf: [512]u8
+	player_dir, player_name, player_artist: string
 
 	screen := Screen.Main_Menu
 	main_items := [?]cstring{"Play a Song", "Import Song", "Practice Drill", "Settings", "Quit"}
@@ -121,7 +127,7 @@ run_app :: proc() {
 		case .Main_Menu:
 			switch menu_input(&main_menu) {
 			case 0:
-				library_view_reload(&lib, LIBRARY_DIR)
+				library_view_reload(&lib, library_root())
 				screen = .Library
 			case 1:
 				browser_open(&browser, start_dir)
@@ -171,49 +177,99 @@ run_app :: proc() {
 			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
 
 		case .Import:
-			if rl.IsKeyPressed(.DOWN) do browser_move(&browser, 1)
-			if rl.IsKeyPressed(.UP) do browser_move(&browser, -1)
-			if rl.IsKeyPressed(.BACKSPACE) do browser_up(&browser)
-			if rl.IsKeyPressed(.ENTER) {
-				if action, path := browser_enter(&browser); action == .Import {
-					import_name = string(import_name_buf[:copy(import_name_buf[:], base_name(path))])
-					out_buf: [512]u8
-					import_start(path, song_out_dir(out_buf[:], path))
-					screen = .Importing
+			switch browser.mode {
+			case .Path:
+				// Text entry owns the keyboard while it's open.
+				for c := rl.GetCharPressed(); c != 0; c = rl.GetCharPressed() {
+					browser_path_char(&browser, c)
 				}
+				if rl.IsKeyPressed(.BACKSPACE) do browser_path_backspace(&browser)
+				if rl.IsKeyPressed(.V) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+					for c in string(rl.GetClipboardText()) do browser_path_char(&browser, c)
+				}
+				if rl.IsKeyPressed(.ENTER) do browser_path_commit(&browser)
+				if rl.IsKeyPressed(.ESCAPE) do browser.mode = .Browse
+
+			case .Places:
+				if rl.IsKeyPressed(.DOWN) do browser.place_sel = menu.move(browser.place_sel, len(browser.places), 1)
+				if rl.IsKeyPressed(.UP) do browser.place_sel = menu.move(browser.place_sel, len(browser.places), -1)
+				if rl.IsKeyPressed(.ENTER) do browser_places_enter(&browser)
+				if rl.IsKeyPressed(.ESCAPE) do browser.mode = .Browse
+
+			case .Browse:
+				if rl.IsKeyPressed(.DOWN) do browser_move(&browser, 1)
+				if rl.IsKeyPressed(.UP) do browser_move(&browser, -1)
+				if rl.IsKeyPressed(.BACKSPACE) do browser_up(&browser)
+				if rl.IsKeyPressed(.P) do browser_open_places(&browser)
+				if rl.IsKeyPressed(.L) do browser_path_begin(&browser)
+				if rl.IsKeyPressed(.SPACE) do browser_toggle_mark(&browser)
+				if rl.IsKeyPressed(.C) do browser_clear_marks(&browser)
+				if rl.IsKeyPressed(.I) && browser_mark_count(&browser) > 0 {
+					// Batch: expand the marked albums/folders into a file queue.
+					// Everything already in the library is skipped, so nothing
+					// is separated twice.
+					if queue_expand(browser.marks[:]) > 0 && queue_start() {
+						browser_clear_marks(&browser)
+						import_name = ""
+						screen = .Importing
+					}
+				}
+				if rl.IsKeyPressed(.ENTER) {
+					if action, path := browser_enter(&browser); action == .Import {
+						import_name = string(import_name_buf[:copy(import_name_buf[:], base_name(path))])
+						out_buf: [512]u8
+						import_start(path, song_out_dir(out_buf[:], path))
+						screen = .Importing
+					}
+				}
+				if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
 			}
-			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
 
 		case .Importing:
+			// A batch run advances itself: when one song finishes, the queue
+			// starts the next. queue_poll is a no-op for a single import.
+			queue_poll()
 			// leave when the user acknowledges (ESC always; ENTER once finished).
 			_, st := import_progress()
-			done := st == .Done || st == .Error
+			done := (st == .Done || st == .Error) && !queue_active()
 			if rl.IsKeyPressed(.ESCAPE) || (done && rl.IsKeyPressed(.ENTER)) {
+				queue_cancel() // drop any remaining queue
 				import_cancel() // kill a still-running separator so the join is prompt
 				import_reset()
-				library_view_reload(&lib, LIBRARY_DIR)
+				library_view_reload(&lib, library_root())
 				screen = .Library
 			}
 
 		case .Library:
 			if rl.IsKeyPressed(.DOWN) do library_view_move(&lib, 1)
 			if rl.IsKeyPressed(.UP) do library_view_move(&lib, -1)
-			if rl.IsKeyPressed(.ENTER) && len(lib.songs) > 0 {
-				s := lib.songs[lib.sel]
-				if sa, ok := stems_load(s.dir); ok {
-					player_song = sa
-					ctl, rig, _ := prefs_load(s.dir)
-					for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
-					apply_rig(rig)
-					player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
-					player_name = string(player_name_buf[:copy(player_name_buf[:], s.name)])
-					player_sel = 0
-					player_open(player_song)
-					player_set_speed(rig.speed) // after open (which resets speed to 1.0)
-					screen = .Player
+			if rl.IsKeyPressed(.ENTER) {
+				// ENTER descends Artist -> Album -> Song; only the Song level
+				// yields a song to load.
+				if s, chosen := library_view_enter(&lib); chosen {
+					if sa, ok := stems_load(s.dir); ok {
+						player_song = sa
+						ctl, rig, _ := prefs_load(s.dir)
+						for i in 0 ..< 6 do player_song.ctl[i] = ctl[i]
+						apply_rig(rig)
+						player_dir = string(player_dir_buf[:copy(player_dir_buf[:], s.dir)])
+						// Show the tagged title, not the folder slug.
+						player_name = string(
+							player_name_buf[:copy(player_name_buf[:], song_title(s))],
+						)
+						player_artist = string(
+							player_artist_buf[:copy(player_artist_buf[:], song_artist(s))],
+						)
+						player_sel = 0
+						player_open(player_song)
+						player_set_speed(rig.speed) // after open (which resets speed to 1.0)
+						screen = .Player
+					}
 				}
 			}
-			if rl.IsKeyPressed(.ESCAPE) do screen = .Main_Menu
+			// ESC walks back up the drill-down, and only leaves for the menu
+			// once we're at the top (Artist) level.
+			if rl.IsKeyPressed(.ESCAPE) && !library_view_back(&lib) do screen = .Main_Menu
 
 		case .Player:
 			SR :: int(clock.SAMPLE_RATE)
@@ -275,7 +331,7 @@ run_app :: proc() {
 		case .Importing:
 			importing_draw(import_name)
 		case .Player:
-			player_view_draw(player_name, player_sel)
+			player_view_draw(player_name, player_artist, player_sel)
 		}
 		rl.EndTextureMode()
 
@@ -297,8 +353,6 @@ Screen :: enum {
 	Importing,
 	Player,
 }
-
-LIBRARY_DIR :: "library"
 
 Menu_Widget :: struct {
 	title: cstring,
@@ -427,10 +481,11 @@ adjust_monitor_tone :: proc(dbass, dtreble: f32) {
 	audio_set_monitor_tone(clamp(b + dbass, -12, 12), clamp(tr + dtreble, -12, 12))
 }
 
-// song_out_dir is the library folder for an imported file: "library/<slug>".
+// song_out_dir is the library folder for an imported file: "<library>/<slug>".
 // Written into `buf`.
 song_out_dir :: proc(buf: []u8, path: string) -> string {
-	n := copy(buf, LIBRARY_DIR + "/")
+	n := copy(buf, library_root())
+	n += copy(buf[n:], "/")
 	s := songlib.slug(base_name(path), buf[n:])
 	return string(buf[:n + len(s)])
 }

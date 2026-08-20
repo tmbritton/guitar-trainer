@@ -1,2 +1,31 @@
 [tools]
 odin = "dev-2026-08"
+# Song import (assets/separate.py -> Demucs) runs on this Python, not the host's.
+# 3.13 rather than 3.14: the whole torch/torchaudio stack is best-tested on N-1.
+python = "3.13.15"
+
+[env]
+# Project-scoped virtualenv. mise creates it on first entry and activates it
+# whenever you're in this directory, so `python3`/`pip` resolve to ./.venv and
+# nothing is installed system-wide. Requires `mise activate zsh` in your shell
+# rc — shims alone do not activate a venv.
+#
+# uv_create_args = ["--seed"] is load-bearing: mise builds the venv with `uv`,
+# and a bare `uv venv` ships no pip. Without --seed, `pip install` inside an
+# activated shell silently falls through to the mise toolchain's pip and
+# installs into ~/.local/share/mise/installs/python/... instead of ./.venv.
+_.python.venv = { path = ".venv", create = true, uv_create_args = ["--seed"] }
+
+[tasks.setup-python]
+description = "Install the song-import Python deps (Demucs + torch) into ./.venv"
+# Installs the exact locked set. requirements.txt holds the direct deps; run
+# `mise run lock-python` after editing it to regenerate the lock.
+run = "pip install --upgrade pip && pip install -r requirements.lock.txt"
+
+[tasks.lock-python]
+description = "Re-resolve requirements.txt and refresh requirements.lock.txt"
+run = "pip install -r requirements.txt && pip freeze > requirements.lock.txt"
+
+[tasks.check-python]
+description = "Verify the project venv has a working Demucs"
+run = "python3 -c 'import demucs, torch; print(\"demucs\", demucs.__version__, \"| torch\", torch.__version__, \"| cuda\", torch.cuda.is_available())'"

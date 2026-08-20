@@ -40,3 +40,6 @@
 /src/soundtouch/libsoundtouch.a
 /src/soundtouch/vendor/
 /src/soundtouch/obj/
+
+# project Python virtualenv (mise creates it; deps from requirements.txt)
+/.venv/

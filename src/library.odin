@@ -14,7 +14,15 @@ import "songlib"
 Song :: struct {
 	name: string, // library folder name (slug)
 	dir:  string, // full path to the song's stem folder
+	meta: songlib.Meta, // tags from meta.txt; all-empty when the file is absent
 }
+
+// song_artist / song_album / song_title are the display strings for a Song,
+// falling back to "Unknown ..." / the folder slug when it carries no tags (an
+// import from before meta.txt existed, or a source file with no tags).
+song_artist :: proc(s: Song) -> string {return songlib.group_artist(s.meta)}
+song_album :: proc(s: Song) -> string {return songlib.group_album(s.meta)}
+song_title :: proc(s: Song) -> string {return songlib.display_title(s.meta, s.name)}
 
 // library_scan lists finished separations under `root`: each subdirectory whose
 // contents contain all 6 stems (songlib.is_song_dir). Allocates; free with
@@ -27,10 +35,21 @@ library_scan :: proc(root: string, allocator := context.allocator) -> []Song {
 		if e.type != .Directory do continue
 		dir := strings.concatenate({root, "/", e.name}, context.temp_allocator)
 		if is_finished_song(dir) {
-			append(&songs, Song{name = strings.clone(e.name, allocator), dir = strings.clone(dir, allocator)})
+			append(
+				&songs,
+				Song {
+					name = strings.clone(e.name, allocator),
+					dir = strings.clone(dir, allocator),
+					meta = read_meta(dir, allocator),
+				},
+			)
 		}
 	}
-	slice.sort_by(songs[:], proc(a, b: Song) -> bool {return a.name < b.name})
+	// Artist -> album -> disc -> track, so the drill-down levels and the track
+	// order within an album both fall out of one sort.
+	slice.sort_by(songs[:], proc(a, b: Song) -> bool {
+		return songlib.meta_less(a.meta, b.meta, a.name, b.name)
+	})
 	return songs[:]
 }
 
@@ -38,8 +57,36 @@ library_free :: proc(songs: []Song, allocator := context.allocator) {
 	for s in songs {
 		delete(s.name, allocator)
 		delete(s.dir, allocator)
+		free_meta(s.meta, allocator)
 	}
 	delete(songs, allocator)
+}
+
+// read_meta loads and parses `dir`/meta.txt. songlib.parse_meta returns slices
+// into the file buffer, which is temp — so each field is cloned into `allocator`
+// (owned by the Song, released by free_meta). A missing file yields a zero Meta,
+// which the song_* accessors render as the "Unknown" fallbacks.
+@(private = "file")
+read_meta :: proc(dir: string, allocator := context.allocator) -> songlib.Meta {
+	path := strings.concatenate({dir, "/meta.txt"}, context.temp_allocator)
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil do return {}
+	m := songlib.parse_meta(string(data))
+	m.artist = strings.clone(m.artist, allocator)
+	m.albumartist = strings.clone(m.albumartist, allocator)
+	m.album = strings.clone(m.album, allocator)
+	m.title = strings.clone(m.title, allocator)
+	m.source = strings.clone(m.source, allocator)
+	return m
+}
+
+@(private = "file")
+free_meta :: proc(m: songlib.Meta, allocator := context.allocator) {
+	delete(m.artist, allocator)
+	delete(m.albumartist, allocator)
+	delete(m.album, allocator)
+	delete(m.title, allocator)
+	delete(m.source, allocator)
 }
 
 @(private = "file")

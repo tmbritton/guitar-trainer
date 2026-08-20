@@ -8,17 +8,30 @@ Per-story implementation plans live in `docs/epic-{N}/story-{M}.md`.
 
 - **Odin via mise**, pinned in `mise.toml` (`dev-2026-08`). Run Odin as
   `mise exec -- odin ...`.
+- **`clang` must be on PATH** — Odin shells out to it as the linker driver on
+  every build, regardless of which compiler builds the C/C++ libs. `-linker:lld`
+  / `-linker:mold` don't avoid it; they only append `-fuse-ld=`. A `clang`
+  wrapper that execs `gcc` works if a real clang isn't available.
 - `vendor:raylib` and `vendor:miniaudio` ship with Odin. **miniaudio ships source
   only** — its `lib/miniaudio.a` is built on demand by `build.sh`/`test.sh`.
+- **Python is mise-managed too** (pinned in `mise.toml`), with a project venv at
+  `./.venv` (`_.python.venv`, auto-created). It only holds the song-import deps
+  (Demucs); nothing else in the app uses Python. `mise run setup-python` installs
+  `requirements.lock.txt`; `mise run lock-python` re-resolves it from
+  `requirements.txt`. The venv activates under `mise activate` / `mise exec` only
+  — **not** via shims. Note `uv_create_args = ["--seed"]`: mise builds the venv
+  with `uv`, which ships no `pip`, so without it `pip install` silently escapes
+  the venv and writes into the mise Python toolchain instead.
 
 ## Build & run
 
 - `./build.sh` → `./guitar-trainer`, built `-o:speed` (needed — the DSP, esp.
   IR convolution, is ~10x slower unoptimized). `./build.sh -debug` arms the
   audio-thread allocation guard (panics on any alloc in the callback).
-- raylib links the X11 stack + GL. On this host (Bluefin/Fedora Atomic) the dev
-  `.so`s live under Homebrew; `build.sh` passes
-  `-L/home/linuxbrew/.linuxbrew/lib` + rpath. Don't remove that.
+- raylib links the X11 stack + GL, and `store` links sqlite3. Where those dev
+  `.so`s live varies by distro, so `build.sh`/`test.sh` pass an extra `-L` +
+  rpath (`BREW_LIB`) for setups where they aren't on the default linker path.
+  Point it at your own prefix if the link fails to resolve them.
 
 ## Test & verify
 
@@ -63,7 +76,10 @@ src/
   drill.odin       drill state machine (Idle→Prep→Listen→Confirm→Fb_Prep→Feedback)
   drill_view.odin  drill HUD + progress-panel rendering (pure view)
   import.odin      song-import worker (spawn separate.py, read progress pipe)
-  library.odin     library scan (finished songs) + import file-browser listing
+  library.odin     library scan (finished songs + meta.txt) + file-browser listing
+  librarypath.odin resolve the library root (env / XDG), created on demand
+  placelist.odin   "Places" jump list: home, Music, mounted volumes
+  importqueue.odin batch import: expand marked folders -> sequential file queue
   import_view.odin file browser / importing-progress / library screens (view)
   stems.odin       decode a song's 6 stems to mono f32 @ 48k (Song_Audio)
   player.odin      song player: producer thread mixes stems -> PCM ring; transport
@@ -90,7 +106,8 @@ src/
   game/            trial generation + judging               (unit-tested)
   store/           SQLite trial log (hand-written bindings) (unit-tested)
   menu/            pure keyboard-menu navigation math       (unit-tested)
-  songlib/         import protocol parse + slug + song-dir  (unit-tested)
+  songlib/         import protocol parse + slug + song-dir + meta.txt (unit-tested)
+  places/          /proc/mounts parse -> media mount shortcuts   (unit-tested)
   pcmring/         SPSC f32 sample ring (player->callback)  (unit-tested)
   mix/             stem-mixer gain math (level/mute/solo)   (unit-tested)
   ampchain/        realtime monitor amp DSP (oversampled ws + tone + FIR cab) (unit-tested)
@@ -141,8 +158,81 @@ stdout — `PROGRESS <0..100>` / `DONE <dir>` / `ERROR <msg>` — which `import.
 reads over a pipe on a worker thread (parsed by the pure `songlib` pkg) to drive
 a live progress bar (Importing screen). Finished stems land in `library/<slug>/`
 and show on the **Play a Song** (Library) screen (the player itself is Story
-6.3). Real Demucs needs `pip install demucs` and is slow on CPU — a live/manual
+6.3). Real Demucs lives in the project venv (`mise run setup-python`; pinned by
+`requirements.lock.txt`) and is slow on CPU — a live/manual
 gate; automated coverage uses `separate.py --stub` (no ML) via `--importcheck`.
+
+## Song metadata + library grouping
+
+`separate.py` also reads the **source file's tags** (mutagen, `easy=True` so
+FLAC/MP3/MP4/OGG all give uniform key names) and writes
+`library/<slug>/meta.txt` — a line-oriented `key value` file: `artist`,
+`albumartist`, `album`, `title`, `track`, `disc`, `year`, `source`. Both the real
+and `--stub` paths write it. Values are whitespace-normalized to one line, since
+tags like `lyrics` carry embedded newlines that would corrupt the format.
+
+`songlib.parse_meta` parses it (allocation-free — fields are subslices of the
+caller's buffer, so `library.odin` clones them into the Song). Display falls back
+gracefully: no `title` → the folder slug, no artist/album → `Unknown Artist` /
+`Unknown Album`, so songs imported before metadata existed still list.
+**Grouping prefers `albumartist`** over `artist`, or a "feat." track would split
+its own album. `songlib.meta_less` sorts artist → album → disc → track → title,
+so one sort feeds both the drill-down levels and album track order.
+
+The Library screen is a **drill-down**: Artist → Album → Song (`Lib_Level` in
+`import_view.odin`). `rows` holds the song indices backing the level on screen,
+rebuilt only on a level change — never per frame. ENTER descends,
+`library_view_enter` returning a Song only at the Song level; ESC ascends, and
+`library_view_back` returns false at the top so `app.odin` knows to leave for the
+main menu instead.
+
+**Backfill:** `./guitar-trainer --meta <song-dir> <source-file>` re-reads tags
+into an existing song via `separate.py --tags-only`, which skips separation
+entirely — so re-tagging costs nothing and never re-runs Demucs.
+
+## Where the library lives
+
+`librarypath.odin` resolves the root once per process: `$GUITAR_TRAINER_LIBRARY`
+→ `$XDG_DATA_HOME/guitar-trainer/library` → `$HOME/.local/share/guitar-trainer/
+library` → `./library`. It used to be the bare relative literal `"library"`,
+which meant the library silently depended on the working directory the binary was
+launched from — and put hundreds of GB inside the source repo. Self-tests that
+import must redirect it via `os.set_env(LIBRARY_ENV, ...)` **before** the first
+`library_root()` call (it caches), or they pollute the real library.
+
+## Stem format (mono FLAC)
+
+Imports write six **mono FLAC** stems. The device is mono, so `stems.odin`
+downmixes every stem to mono f32 on load anyway — stereo on disk costs ~3.4x for
+audio that is discarded. Measured: a 5-minute song is ~39 MB mono FLAC against
+~304 MB stereo WAV. Encoded by `soundfile` (bundles libsndfile in the wheel — no
+system ffmpeg, which the demucs FLAC path would otherwise require).
+`songlib.STEM_EXTS` lists `.flac` then `.wav`, and both `is_song_dir` and
+`stems_load` accept either, so pre-FLAC imports keep working and the `--stub`
+separator can stay on its dependency-free WAV writer.
+
+## Batch import (choosing albums)
+
+The Import browser reaches a media library three ways: **P** opens a Places jump
+list (home, Music, and every mounted volume found in `/proc/mounts` via the pure
+`places` pkg), **L** opens a path field (typing or CTRL+V), and BACKSPACE still
+walks up. **SPACE marks** the selected row — a marked *folder* means "everything
+under it", which is how an album or a whole artist gets picked — and **I** starts
+the run.
+
+`importqueue.odin` expands the marks (recursive, depth-capped at
+`QUEUE_MAX_DEPTH` so a symlink cycle on a share can't walk forever), **skips
+anything already in the library**, sorts by path (album order), then feeds
+`import.odin` one file at a time. Sequential on purpose: Demucs holds one model
+on the GPU, so concurrent separations would just contend. The UI calls
+`queue_poll()` each frame to advance it.
+
+**autofs caveat:** an idle automounted NAS share appears in `/proc/mounts` *only*
+as an `autofs` entry — the CIFS/NFS mount exists just while something holds it
+open. So autofs entries must be kept (skipping them hides exactly the shares
+Places exists to reach), and their paths must **not** be `stat`ed to test
+liveness: on a direct automount that triggers the mount and blocks until an
+unreachable server times out.
 
 ## Song player (play-along)
 
@@ -222,7 +312,13 @@ time-stretch: asserts the output/input ratio is ~1 at 1.0x bypass and ~2 at
 loopback, output rises with monitoring on and returns to baseline at level 0),
 `devicecheck` (enumerate audio devices; re-init the duplex device to explicit
 device IDs; master clock stays live), `loopcheck` (A-B loop keeps the player
-cursor inside the span and wraps at B), `riff` / `riff-wav` (audition tone /
+cursor inside the span and wraps at B), `queuecheck` (batch import: recursive
+folder expansion, already-imported skipping, path ordering, and a 3-song stub
+run driven to completion in a redirected temp library), `stemcheck [dir]`
+(decode real imported stems — the whole library by default — reporting per-song
+length and stem count; catches a stem-format change the loader can't read),
+`meta <song-dir> <source-file>` (backfill a song's meta.txt from its source
+file's tags; no separation), `riff` / `riff-wav` (audition tone /
 export WAV + timing).
 
 ## Status

@@ -8,10 +8,50 @@ package main
 // Nothing here touches the audio callback.
 
 import "base:intrinsics"
+import "core:fmt"
 import "core:os"
 import "core:thread"
 
 import "songlib"
+
+// Interpreter for the separator, relative to the repo root the binary runs from
+// (same base as the "assets/separate.py" path below). Created by mise.
+VENV_PYTHON :: ".venv/bin/python3"
+
+// separator_python picks the interpreter to run assets/separate.py with. mise
+// creates ./.venv and installs Demucs into it (see mise.toml), but that venv is
+// only on PATH inside a mise-activated shell — so resolve it directly, and the
+// separator then works however the binary was launched. Falls back to PATH.
+separator_python :: proc() -> string {
+	return VENV_PYTHON if os.exists(VENV_PYTHON) else "python3"
+}
+
+// meta_backfill re-reads `src`'s tags into `dir`/meta.txt without re-separating,
+// for songs imported before metadata existed. Blocking; prints the outcome.
+// Exits with a non-zero status on failure so it composes in a shell loop.
+meta_backfill :: proc(dir, src: string) {
+	if !os.exists(src) {
+		fmt.eprintfln("--meta: source file not found: %s", src)
+		os.exit(2)
+	}
+	if !os.exists(dir) {
+		fmt.eprintfln("--meta: song dir not found: %s", dir)
+		os.exit(2)
+	}
+	// --tags-only writes meta.txt and skips Demucs entirely, so this is instant.
+	argv := []string{separator_python(), "assets/separate.py", src, dir, "--tags-only"}
+	child, serr := os.process_start({command = argv, stdout = os.stdout, stderr = os.stderr})
+	if serr != nil {
+		fmt.eprintfln("--meta: could not start separate.py (run `mise run setup-python`?)")
+		os.exit(1)
+	}
+	state, werr := os.process_wait(child)
+	if werr != nil || !state.success {
+		fmt.eprintfln("--meta: tag read failed for %s", src)
+		os.exit(1)
+	}
+	fmt.printfln("--meta: wrote %s/meta.txt", dir)
+}
 
 Import_State :: enum u32 {
 	Idle,
@@ -121,13 +161,19 @@ import_worker :: proc() {
 		return
 	}
 
-	argv: [5]string = {"python3", "assets/separate.py", g_import_input, g_import_out, "--stub"}
+	argv: [5]string = {
+		separator_python(),
+		"assets/separate.py",
+		g_import_input,
+		g_import_out,
+		"--stub",
+	}
 	n := g_import_stub ? 5 : 4
 	child, serr := os.process_start({command = argv[:n], stdout = w})
 	os.close(w) // parent drops its write end so read() sees EOF when the child exits
 	if serr != nil {
 		os.close(r)
-		finish(.Error, "could not start separate.py (is python3 on PATH?)")
+		finish(.Error, "could not start separate.py (run `mise run setup-python`?)")
 		return
 	}
 	g_import_child = child // published before the valid flag so import_cancel sees it

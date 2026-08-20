@@ -7,6 +7,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:time"
 
 import "core:math"
@@ -1041,4 +1042,160 @@ audiocheck :: proc() {
 		os.exit(1)
 	}
 	fmt.println("PASS: duplex device + master clock are live")
+}
+
+// stemcheck decodes real songs and reports each stem's frame count. Unlike the
+// synthetic decode smoke inside playercheck, this runs against files an actual
+// import produced — which is what catches a stem-format change (mono FLAC) that
+// the loader can't read. With no argument it walks the whole library, so it also
+// serves as a post-bulk-import verification pass.
+stemcheck :: proc(dir_arg: string) {
+	songs: []Song
+	scanned := false
+	if dir_arg != "" {
+		songs = []Song{{name = dir_arg, dir = dir_arg}}
+	} else {
+		songs = library_scan(library_root())
+		scanned = true
+		if len(songs) == 0 {
+			fmt.eprintfln("FAIL: no songs in library (%s)", library_root())
+			os.exit(1)
+		}
+	}
+	// NOTE: this must not be deferred inside the branch above — Odin runs defer
+	// at the end of the enclosing *block*, which would free the songs before
+	// the loop below reads them.
+	defer if scanned do library_free(songs)
+
+	bad := 0
+	for s in songs {
+		sa, ok := stems_load(s.dir)
+		defer stems_free(&sa)
+		if !ok {
+			fmt.eprintfln("FAIL: %s — no stem decoded", s.dir)
+			bad += 1
+			continue
+		}
+		missing := 0
+		for pcm in sa.stems do if pcm == nil do missing += 1
+		secs := f64(sa.frames) / f64(clock.SAMPLE_RATE)
+		fmt.printfln(
+			"%-40s %.1fs  %d/6 stems%s",
+			song_title(s),
+			secs,
+			6 - missing,
+			missing > 0 ? "  (incomplete)" : "",
+		)
+		if missing > 0 do bad += 1
+	}
+	if bad > 0 {
+		fmt.eprintfln("FAIL: %d song(s) did not decode fully", bad)
+		os.exit(1)
+	}
+	fmt.printfln("PASS: %d song(s) decoded, all 6 stems each", len(songs))
+}
+
+// queuecheck verifies batch-import expansion without running Demucs: a marked
+// folder is walked recursively, non-audio is ignored, songs already in the
+// library are skipped (so re-marking a part-imported album only does the rest),
+// and the resulting order is deterministic.
+queuecheck :: proc() {
+	root :: "/tmp/gt_queuecheck"
+	// Redirect the library before anything calls library_root() (which caches
+	// on first use), so the stub imports below land in a temp dir instead of
+	// the real library.
+	lib_root :: "/tmp/gt_queuecheck_lib"
+	os.remove_all(lib_root)
+	_ = os.set_env(LIBRARY_ENV, lib_root)
+	defer os.remove_all(lib_root)
+	if library_root() != lib_root {
+		fmt.eprintfln("FAIL: library redirect ignored (got %s)", library_root())
+		os.exit(1)
+	}
+	os.remove_all(root)
+	defer os.remove_all(root)
+	_ = os.make_directory_all(fmt.tprintf("%s/Artist/Album A", root))
+	_ = os.make_directory_all(fmt.tprintf("%s/Artist/Album B", root))
+
+	write :: proc(path: string) {
+		_ = os.write_entire_file(path, []u8{0})
+	}
+	// Deliberately out of order, plus a non-audio file that must be ignored.
+	write(fmt.tprintf("%s/Artist/Album A/02 second.flac", root))
+	write(fmt.tprintf("%s/Artist/Album A/01 first.flac", root))
+	write(fmt.tprintf("%s/Artist/Album A/cover.jpg", root))
+	write(fmt.tprintf("%s/Artist/Album B/01 other.mp3", root))
+
+	marks := []string{fmt.tprintf("%s/Artist", root)}
+	n := queue_expand(marks)
+	if n != 3 {
+		fmt.eprintfln("FAIL: expected 3 queued files, got %d", n)
+		os.exit(1)
+	}
+	// Path order => album order, and "01" before "02".
+	if !strings.has_suffix(g_queue.files[0], "Album A/01 first.flac") {
+		fmt.eprintfln("FAIL: queue not in path order, head is %s", g_queue.files[0])
+		os.exit(1)
+	}
+
+	// Now mark one of them as already imported and re-expand: it must be skipped.
+	buf: [512]u8
+	out := song_out_dir(buf[:], g_queue.files[0])
+	_ = os.make_directory_all(out)
+	for stem in songlib.STEMS {
+		_ = os.write_entire_file(fmt.tprintf("%s/%s.flac", out, stem), []u8{0})
+	}
+	n2 := queue_expand(marks)
+	if n2 != 2 {
+		fmt.eprintfln("FAIL: already-imported song not skipped (got %d, want 2)", n2)
+		os.exit(1)
+	}
+	queue_reset()
+
+	// Marking a single file queues just that file.
+	n3 := queue_expand([]string{fmt.tprintf("%s/Artist/Album B/01 other.mp3", root)})
+	if n3 != 1 {
+		fmt.eprintfln("FAIL: single-file mark queued %d files", n3)
+		os.exit(1)
+	}
+	queue_reset()
+	// Drop the stand-in library entry again so the drive below has all 3 to do.
+	os.remove_all(out)
+
+	// --- drive the queue: 3 stub separations must run one after another ---
+	n4 := queue_expand(marks)
+	if n4 != 3 {
+		fmt.eprintfln("FAIL: re-expand gave %d, want 3", n4)
+		os.exit(1)
+	}
+	if !queue_start(true) {
+		fmt.eprintln("FAIL: queue_start refused a non-empty queue")
+		os.exit(1)
+	}
+	// Poll like the UI does, with a ceiling so a wedged queue fails instead of
+	// hanging the test run.
+	for i := 0; queue_active() && i < 4000; i += 1 {
+		queue_poll()
+		time.sleep(5 * time.Millisecond)
+	}
+	if queue_active() {
+		fmt.eprintln("FAIL: queue did not finish")
+		os.exit(1)
+	}
+	done, total, failed, _ := queue_status()
+	if done != 3 || total != 3 || failed != 0 {
+		fmt.eprintfln("FAIL: queue finished %d/%d with %d failed, want 3/3 and 0", done, total, failed)
+		os.exit(1)
+	}
+	// Every queued song must now be a complete library entry.
+	for f in ([]string{"01 first.flac", "02 second.flac", "01 other.mp3"}) {
+		b2: [512]u8
+		if !is_finished_song_dir(song_out_dir(b2[:], f)) {
+			fmt.eprintfln("FAIL: %s did not land in the library", f)
+			os.exit(1)
+		}
+	}
+	queue_reset()
+
+	fmt.println("PASS: import queue expands folders, skips imported, orders by path, runs to completion")
 }
